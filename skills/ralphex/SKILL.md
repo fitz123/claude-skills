@@ -218,16 +218,6 @@ cat /tmp/ralphex-run-${RUN_ID}/exit.code
 Примечание:
 - `--no-color` в запуске делает лог стабильнее для парсинга скриптами.
 
-### 4. Override config per-run
-
-For one-off changes, edit `.ralphex/config` in project dir before running.
-Or create a local config:
-```bash
-mkdir -p .ralphex
-echo 'max_iterations = 5' > .ralphex/config
-echo 'claude_args = --dangerously-skip-permissions --output-format stream-json --verbose --model opus' >> .ralphex/config
-```
-
 ## Typical Presets
 
 ### Quick review (skill/doc changes)
