@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tea PR Workflow"
+  short_description: "Create and manage Gitea pull requests with tea CLI"
+  default_prompt: "Use when a user asks to create or manage a Gitea pull request with tea."

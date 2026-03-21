@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""tc - TeamCity REST API helper (AI-optimized JSON output)
+
+Usage:
+  tc projects                              # List all projects
+  tc project <id>                          # Project details
+  tc buildtypes <project-id>              # List build configs
+  tc buildtype <id>                        # Build config details
+  tc steps <buildtype-id>                  # Build steps
+  tc params <buildtype-id>                 # Build parameters
+  tc builds <buildtype-id> [--count N]     # Recent builds
+  tc build <id>                            # Build details
+  tc stats <build-id>                      # Build statistics
+  tc log <build-id>                        # Build log (last 200 lines)
+  tc problems <build-id>                   # Build problems
+  tc tests <build-id>                      # Failed tests
+  tc agents                                # List agents
+  tc queue                                 # Build queue
+  tc trigger <buildtype-id> [--branch X]   # Trigger build
+  tc cancel <build-id>                     # Cancel build
+  tc get <path>                            # Raw GET any endpoint
+
+Default server: https://teamcity-hel.ordercapital.com
+Token: macOS Keychain (service=teamcity-api, account=infrastructure-dev)
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from urllib.parse import quote, urlparse
+
+DEFAULT_URL = "https://teamcity-hel.ordercapital.com"
+ALLOWED_HOSTS = {"teamcity-hel.ordercapital.com", "teamcity-1.infra.hel.vm.ordercapital.com"}
+CURL_TIMEOUT = "30"
+CURL_CONNECT_TIMEOUT = "5"
+KEYCHAIN_SERVICE = "teamcity-api"
+KEYCHAIN_ACCOUNT = "infrastructure-dev"
+MAX_PROP_LEN = 500
+
+
+def _get_token():
+    """Retrieve Bearer token from macOS Keychain"""
+    result = subprocess.run(
+        ["security", "find-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        _error(
+            f"Token not found in Keychain. "
+            f"Run: security add-generic-password -a {KEYCHAIN_ACCOUNT} -s {KEYCHAIN_SERVICE} -w '<token>' -U"
+        )
+    return result.stdout.strip()
+
+
+def _validate_url(url):
+    """Ensure token is only sent to known hosts"""
+    parsed = urlparse(url)
+    if parsed.hostname not in ALLOWED_HOSTS:
+        _error(f"Refusing to send token to unknown host: {parsed.hostname}. Allowed: {', '.join(sorted(ALLOWED_HOSTS))}")
+    if parsed.scheme != "https":
+        _error(f"Refusing non-HTTPS URL: {url}")
+
+
+def _error(msg):
+    """Print error as JSON and exit"""
+    print(json.dumps({"error": msg}, indent=2))
+    sys.exit(1)
+
+
+def _request(base_url, path, token, method="GET", body=None):
+    """HTTP request returning {ok, status, data} or {error, status, url_path}"""
+    url = f"{base_url}{path}"
+    cmd = [
+        "curl", "--max-time", CURL_TIMEOUT, "--connect-timeout", CURL_CONNECT_TIMEOUT,
+        "-sS", "-w", "\n%{http_code}", url,
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/json"
+    ]
+    if method == "POST":
+        cmd.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", json.dumps(body or {})])
+    elif method == "DELETE":
+        cmd.extend(["-X", "DELETE"])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return {"error": result.stderr.strip() or f"curl exit code {result.returncode}", "url_path": path}
+
+    lines = result.stdout.rsplit("\n", 1)
+    response_body = lines[0] if len(lines) > 1 else ""
+    status_code = int(lines[-1]) if lines[-1].isdigit() else 0
+
+    if status_code < 200 or status_code >= 300:
+        try:
+            err_data = json.loads(response_body)
+            msg = err_data.get("message", err_data.get("error", response_body[:300])) if isinstance(err_data, dict) else response_body[:300]
+        except (json.JSONDecodeError, TypeError):
+            msg = response_body[:300] if response_body else f"HTTP {status_code}"
+        return {"error": msg, "httpStatus": status_code, "url_path": path}
+
+    if not response_body.strip():
+        return {"ok": True, "httpStatus": status_code}
+
+    try:
+        return json.loads(response_body)
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON response", "httpStatus": status_code, "url_path": path, "raw": response_body[:500]}
+
+
+def _request_text(base_url, path, token):
+    """HTTP GET returning raw text (for logs)"""
+    url = f"{base_url}{path}"
+    cmd = [
+        "curl", "--max-time", CURL_TIMEOUT, "--connect-timeout", CURL_CONNECT_TIMEOUT,
+        "-sS", "-w", "\n%{http_code}", url,
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: text/plain"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None, result.stderr.strip()
+
+    lines = result.stdout.rsplit("\n", 1)
+    body = lines[0] if len(lines) > 1 else ""
+    status = int(lines[-1]) if lines[-1].isdigit() else 0
+
+    if status < 200 or status >= 300:
+        return None, f"HTTP {status}: {body[:300]}"
+    return body, None
+
+
+def _esc(s):
+    """URL-encode a path segment"""
+    return quote(str(s), safe="")
+
+
+def _mask_param(p):
+    """Mask password parameters, show others"""
+    type_info = p.get("type", {})
+    raw = type_info.get("rawValue", "") if isinstance(type_info, dict) else ""
+    if "password" in raw.lower():
+        return {"name": p["name"], "value": "(password)"}
+    return {"name": p["name"], "value": p.get("value", "")}
+
+
+def _trunc(s, maxlen=MAX_PROP_LEN):
+    """Truncate long strings"""
+    if not isinstance(s, str) or len(s) <= maxlen:
+        return s
+    return s[:maxlen] + f"... ({len(s)} chars total)"
+
+
+# --- Simplifiers ---
+
+def _simplify_project(data):
+    if "error" in data:
+        return data
+    out = {"id": data.get("id"), "name": data.get("name"), "description": data.get("description", ""), "webUrl": data.get("webUrl")}
+    if "buildTypes" in data:
+        out["buildTypes"] = [{"id": bt["id"], "name": bt["name"]} for bt in data.get("buildTypes", {}).get("buildType", [])]
+    if "projects" in data:
+        out["subprojects"] = [{"id": p["id"], "name": p["name"], "archived": p.get("archived", False)} for p in data.get("projects", {}).get("project", [])]
+    if "parameters" in data:
+        out["parameters"] = [_mask_param(p) for p in data.get("parameters", {}).get("property", [])]
+    return out
+
+
+def _simplify_buildtype_detail(data):
+    if "error" in data:
+        return data
+    out = {
+        "id": data.get("id"), "name": data.get("name"),
+        "projectId": data.get("projectId"), "projectName": data.get("projectName"),
+        "paused": data.get("paused", False), "type": data.get("type"),
+        "webUrl": data.get("webUrl"),
+    }
+    if "parameters" in data:
+        out["parameters"] = [_mask_param(p) for p in data.get("parameters", {}).get("property", [])]
+    if "steps" in data:
+        out["stepCount"] = data.get("steps", {}).get("count", 0)
+    if "templates" in data:
+        out["templates"] = [{"id": t["id"], "name": t.get("name", "")} for t in data.get("templates", {}).get("buildType", [])]
+    if "vcs-root-entries" in data:
+        out["vcsRoots"] = [{"id": v.get("vcs-root", {}).get("id"), "name": v.get("vcs-root", {}).get("name")} for v in data.get("vcs-root-entries", {}).get("vcs-root-entry", [])]
+    return out
+
+
+def _simplify_build(data):
+    if "error" in data:
+        return data
+    out = {
+        "id": data.get("id"), "number": data.get("number"),
+        "status": data.get("status"), "statusText": data.get("statusText"),
+        "state": data.get("state"), "branchName": data.get("branchName"),
+        "buildTypeId": data.get("buildTypeId"),
+        "startDate": data.get("startDate"), "finishDate": data.get("finishDate"),
+        "queuedDate": data.get("queuedDate"), "webUrl": data.get("webUrl"),
+    }
+    triggered = data.get("triggered", {})
+    if triggered:
+        out["triggeredBy"] = {"type": triggered.get("type"), "user": triggered.get("user", {}).get("username")}
+    agent = data.get("agent", {})
+    if agent:
+        out["agent"] = {"id": agent.get("id"), "name": agent.get("name")}
+    return out
+
+
+def _simplify_builds(data):
+    if "error" in data:
+        return data
+    builds = data.get("build", [])
+    return {
+        "count": data.get("count", len(builds)),
+        "builds": [{
+            "id": b.get("id"), "number": b.get("number"), "status": b.get("status"),
+            "state": b.get("state"), "branchName": b.get("branchName"),
+            "startDate": b.get("startDate"), "finishDate": b.get("finishDate"), "webUrl": b.get("webUrl"),
+        } for b in builds]
+    }
+
+
+def _simplify_agents(data):
+    if "error" in data:
+        return data
+    agents = data.get("agent", [])
+    return {
+        "count": data.get("count", len(agents)),
+        "agents": [{
+            "id": a.get("id"), "name": a.get("name"), "connected": a.get("connected"),
+            "enabled": a.get("enabled"), "authorized": a.get("authorized"), "webUrl": a.get("webUrl"),
+        } for a in agents]
+    }
+
+
+def _simplify_steps(data):
+    if "error" in data:
+        return data
+    steps = data.get("step", [])
+    return {
+        "count": data.get("count", len(steps)),
+        "steps": [{
+            "id": s.get("id"), "name": s.get("name"), "type": s.get("type"),
+            "disabled": s.get("disabled", False),
+            "properties": {p["name"]: _trunc(p.get("value", "")) for p in s.get("properties", {}).get("property", [])}
+        } for s in steps]
+    }
+
+
+def _simplify_buildtypes(data):
+    if "error" in data:
+        return data
+    bts = data.get("buildType", [])
+    return {
+        "count": data.get("count", len(bts)),
+        "buildTypes": [{
+            "id": bt.get("id"), "name": bt.get("name"),
+            "projectId": bt.get("projectId"), "projectName": bt.get("projectName"), "webUrl": bt.get("webUrl"),
+        } for bt in bts]
+    }
+
+
+def _simplify_projects(data):
+    if "error" in data:
+        return data
+    projects = data.get("project", [])
+    return {
+        "count": data.get("count", len(projects)),
+        "projects": [{
+            "id": p.get("id"), "name": p.get("name"),
+            "parentProjectId": p.get("parentProjectId"), "archived": p.get("archived", False), "webUrl": p.get("webUrl"),
+        } for p in projects if p.get("id") != "_Root"]
+    }
+
+
+def _simplify_queue(data):
+    if "error" in data:
+        return data
+    builds = data.get("build", [])
+    return {
+        "count": data.get("count", len(builds)),
+        "queued": [{
+            "id": b.get("id"), "buildTypeId": b.get("buildTypeId"),
+            "state": b.get("state"), "branchName": b.get("branchName"), "webUrl": b.get("webUrl"),
+        } for b in builds]
+    }
+
+
+def _simplify_problems(data):
+    if "error" in data:
+        return data
+    items = data.get("problemOccurrence", [])
+    return {
+        "count": data.get("count", len(items)),
+        "problems": [{
+            "id": p.get("id"), "type": p.get("type"),
+            "identity": p.get("identity"), "details": _trunc(p.get("details", ""), 300),
+        } for p in items]
+    }
+
+
+def _simplify_tests(data):
+    if "error" in data:
+        return data
+    items = data.get("testOccurrence", [])
+    return {
+        "count": data.get("count", len(items)),
+        "tests": [{
+            "name": t.get("name"), "status": t.get("status"),
+            "duration": t.get("duration"), "details": _trunc(t.get("details", ""), 300),
+        } for t in items]
+    }
+
+
+def _output(data):
+    print(json.dumps(data, indent=2, allow_nan=False))
+
+
+# --- Main ---
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="TeamCity REST API helper (AI-optimized JSON output)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"Default server: {DEFAULT_URL}"
+    )
+    parser.add_argument("command", help="Subcommand")
+    parser.add_argument("args", nargs="*", help="Command arguments")
+    parser.add_argument("--url", default=os.environ.get("TC_URL", DEFAULT_URL), help="TeamCity server URL")
+    parser.add_argument("--count", type=int, default=10, help="Number of results (for builds)")
+    parser.add_argument("--branch", help="Branch name (for trigger)")
+
+    args = parser.parse_args()
+    base = args.url.rstrip("/")
+    _validate_url(base)
+    token = _get_token()
+    cmd = args.command
+
+    def need_arg(usage):
+        if not args.args:
+            _error(f"Usage: tc {usage}")
+        return args.args[0]
+
+    if cmd == "projects":
+        _output(_simplify_projects(_request(base, "/app/rest/projects", token)))
+
+    elif cmd == "project":
+        pid = need_arg("project <project-id>")
+        _output(_simplify_project(_request(base, f"/app/rest/projects/id:{_esc(pid)}", token)))
+
+    elif cmd == "buildtypes":
+        pid = need_arg("buildtypes <project-id>")
+        _output(_simplify_buildtypes(_request(base, f"/app/rest/buildTypes?locator=affectedProject:(id:{_esc(pid)})", token)))
+
+    elif cmd == "buildtype":
+        btid = need_arg("buildtype <buildtype-id>")
+        _output(_simplify_buildtype_detail(_request(base, f"/app/rest/buildTypes/id:{_esc(btid)}", token)))
+
+    elif cmd == "steps":
+        btid = need_arg("steps <buildtype-id>")
+        _output(_simplify_steps(_request(base, f"/app/rest/buildTypes/id:{_esc(btid)}/steps", token)))
+
+    elif cmd == "params":
+        btid = need_arg("params <buildtype-id>")
+        data = _request(base, f"/app/rest/buildTypes/id:{_esc(btid)}/parameters", token)
+        if "error" not in data:
+            props = data.get("property", [])
+            _output({"count": len(props), "parameters": [_mask_param(p) for p in props]})
+        else:
+            _output(data)
+
+    elif cmd == "builds":
+        btid = need_arg("builds <buildtype-id> [--count N]")
+        _output(_simplify_builds(_request(base, f"/app/rest/builds?locator=buildType:(id:{_esc(btid)}),count:{args.count}", token)))
+
+    elif cmd == "build":
+        bid = need_arg("build <build-id>")
+        _output(_simplify_build(_request(base, f"/app/rest/builds/id:{_esc(bid)}", token)))
+
+    elif cmd == "stats":
+        bid = need_arg("stats <build-id>")
+        data = _request(base, f"/app/rest/builds/id:{_esc(bid)}/statistics", token)
+        if "error" not in data:
+            props = data.get("property", [])
+            stats = {}
+            for p in props:
+                v = p.get("value")
+                try:
+                    v = float(v) if "." in str(v) else int(v)
+                except (ValueError, TypeError):
+                    pass
+                stats[p["name"]] = v
+            _output({"count": len(props), "statistics": stats})
+        else:
+            _output(data)
+
+    elif cmd == "log":
+        bid = need_arg("log <build-id>")
+        body, err = _request_text(base, f"/downloadBuildLog.html?buildId={_esc(bid)}", token)
+        if err:
+            _output({"error": err})
+        else:
+            lines = body.splitlines()
+            tail = lines[-200:] if len(lines) > 200 else lines
+            _output({"buildId": bid, "totalLines": len(lines), "shownLines": len(tail), "log": "\n".join(tail)})
+
+    elif cmd == "problems":
+        bid = need_arg("problems <build-id>")
+        _output(_simplify_problems(_request(base, f"/app/rest/builds/id:{_esc(bid)}/problemOccurrences", token)))
+
+    elif cmd == "tests":
+        bid = need_arg("tests <build-id>")
+        _output(_simplify_tests(_request(base, f"/app/rest/builds/id:{_esc(bid)}/testOccurrences?locator=status:FAILURE", token)))
+
+    elif cmd == "agents":
+        _output(_simplify_agents(_request(base, "/app/rest/agents", token)))
+
+    elif cmd == "queue":
+        _output(_simplify_queue(_request(base, "/app/rest/buildQueue", token)))
+
+    elif cmd == "trigger":
+        btid = need_arg("trigger <buildtype-id> [--branch X]")
+        body = {"buildType": {"id": btid}}
+        if args.branch:
+            body["branchName"] = args.branch
+        data = _request(base, "/app/rest/buildQueue", token, method="POST", body=body)
+        _output(_simplify_build(data) if "error" not in data else data)
+
+    elif cmd == "cancel":
+        bid = need_arg("cancel <build-id>")
+        data = _request(base, f"/app/rest/builds/id:{_esc(bid)}", token, method="POST",
+                        body={"comment": "Cancelled via tc skill", "readdIntoQueue": False})
+        _output({"cancelled": True, "buildId": bid} if "error" not in data else data)
+
+    elif cmd == "get":
+        path = need_arg("get <path>")
+        if not path.startswith("/"):
+            path = f"/app/rest/{path}"
+        _output(_request(base, path, token))
+
+    else:
+        _error(f"Unknown command: {cmd}. Available: projects, project, buildtypes, buildtype, steps, params, builds, build, stats, log, problems, tests, agents, queue, trigger, cancel, get")
+
+
+if __name__ == "__main__":
+    main()

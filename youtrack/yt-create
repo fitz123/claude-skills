@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Create a new YouTrack issue
+# Usage: yt-create --project DVPS --summary "Title" [--description "text" | --description-file /path/to/file.md] [--command "tag Operations state In progress"]
+#
+# Examples:
+#   yt-create --project DVPS --summary "Fix login bug" --description "Steps to reproduce..."
+#   yt-create --project DVPS --summary "Server migration" --description-file /tmp/desc.md --command "tag Operations Assignee gmalashikhin state In progress"
+#   yt-create --project DVPS --summary "Quick task"
+set -euo pipefail
+
+PROJECT=""
+SUMMARY=""
+DESCRIPTION=""
+DESC_FILE=""
+COMMAND=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project|--summary|--description|--description-file|--command)
+      [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 1; }
+      ;;&
+    --project) PROJECT="$2"; shift 2 ;;
+    --summary) SUMMARY="$2"; shift 2 ;;
+    --description) DESCRIPTION="$2"; shift 2 ;;
+    --description-file) DESC_FILE="$2"; shift 2 ;;
+    --command) COMMAND="$2"; shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$PROJECT" ]] || [[ -z "$SUMMARY" ]]; then
+  echo "Usage: yt-create --project PROJECT --summary \"Title\" [--description \"text\" | --description-file FILE] [--command \"commands\"]" >&2
+  exit 1
+fi
+
+BASE="https://ordercapital.myjetbrains.com/youtrack/api"
+TOKEN=$(printenv YOUTRACK_TOKEN)
+
+# Resolve description
+if [[ -n "$DESC_FILE" ]]; then
+  if [[ ! -f "$DESC_FILE" ]]; then
+    echo "Error: file not found: $DESC_FILE" >&2
+    exit 1
+  fi
+  DESCRIPTION=$(cat "$DESC_FILE")
+fi
+
+# Build JSON payload
+TMPFILE=$(mktemp "/tmp/yt-create-XXXXXX.json")
+trap "rm -f '$TMPFILE'" EXIT
+
+python3 -c "
+import json, sys
+payload = {
+    'project': {'shortName': sys.argv[1]},
+    'summary': sys.argv[2],
+}
+if sys.argv[3]:
+    payload['description'] = sys.argv[3]
+with open(sys.argv[4], 'w') as f:
+    json.dump(payload, f)
+" "$PROJECT" "$SUMMARY" "$DESCRIPTION" "$TMPFILE"
+
+# Create issue
+RESULT=$(curl -s -k -m 30 -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  "${BASE}/issues?fields=idReadable,summary" \
+  -d @"$TMPFILE")
+
+ISSUE_ID=$(echo "$RESULT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if 'idReadable' in d:
+    print(d['idReadable'])
+else:
+    print(json.dumps(d, indent=2), file=sys.stderr)
+    sys.exit(1)
+")
+
+echo "Created: ${ISSUE_ID}"
+
+# Apply commands if specified
+if [[ -n "$COMMAND" ]]; then
+  CMD_TMPFILE=$(mktemp "/tmp/yt-cmd-XXXXXX.json")
+  trap "rm -f '$TMPFILE' '$CMD_TMPFILE'" EXIT
+
+  python3 -c "
+import json, sys
+with open(sys.argv[1], 'w') as f:
+    json.dump({'query': sys.argv[2], 'issues': [{'idReadable': sys.argv[3]}]}, f)
+" "$CMD_TMPFILE" "$COMMAND" "$ISSUE_ID"
+
+  CMD_RESULT=$(curl -s -k -m 30 -X POST \
+    -H "Accept: application/json" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    "${BASE}/commands" \
+    -d @"$CMD_TMPFILE")
+
+  if [[ "$CMD_RESULT" == "{}" ]] || [[ -z "$CMD_RESULT" ]]; then
+    echo "Commands applied: ${COMMAND}"
+  else
+    echo "$CMD_RESULT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if 'error' in d or 'error_description' in d:
+    print(f\"Error applying commands: {d.get('error', d.get('error_description', json.dumps(d)))}\", file=sys.stderr)
+    sys.exit(1)
+else:
+    print(json.dumps(d, indent=2))
+" || { echo "Warning: issue ${ISSUE_ID} created but commands failed: ${COMMAND}" >&2; exit 1; }
+  fi
+fi
+
+echo "URL: https://ordercapital.myjetbrains.com/youtrack/issue/${ISSUE_ID}"

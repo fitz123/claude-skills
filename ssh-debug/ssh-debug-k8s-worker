@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""ssh-debug-k8s-worker - K8s worker node debugging helper (AI-optimized JSON output)
+
+Usage:
+  ssh-debug-k8s-worker <host> status                         # kubelet + containerd health
+  ssh-debug-k8s-worker <host> config [kubelet|containerd|all] # Read node configs
+  ssh-debug-k8s-worker <host> logs [kubelet|containerd] [-n N] # Service logs
+  ssh-debug-k8s-worker <host> containers                     # crictl ps/images, overlayfs
+  ssh-debug-k8s-worker <host> dmesg [-n N]                   # Kernel warnings/errors
+  ssh-debug-k8s-worker <host> disk [path]                    # Filesystem usage
+  ssh-debug-k8s-worker <host> ephemeral <context> [--top N]  # Top pods by ephemeral storage
+
+All commands are READ-ONLY. No modifications are made to target nodes.
+Host is always the first argument (for Claude Code permission matching).
+"""
+
+import json
+import posixpath
+import re
+import subprocess
+import sys
+
+SSH_TIMEOUT = 30
+KUBECTL_TIMEOUT = 30
+MAX_FIELD_BYTES = 50000
+
+HOST_RE = re.compile(r'^[a-z0-9][a-z0-9.-]+$', re.ASCII)
+
+ALLOWED_DU_PATHS = [
+    '/var/lib/containerd',
+    '/var/lib/kubelet',
+    '/var/log',
+    '/var/log/pods',
+    '/var/log/journal',
+    '/tmp',
+    '/opt',
+    '/var/lib/docker',
+]
+
+CONFIG_FILES = {
+    'kubelet': '/etc/kubernetes/kubelet-config.yaml',
+    'containerd': '/etc/containerd/config.toml',
+}
+
+LOG_SERVICES = ['kubelet', 'containerd']
+
+COMMANDS = {}
+
+
+def _error(msg):
+    print(json.dumps({"error": msg}, indent=2))
+    sys.exit(1)
+
+
+def _usage():
+    _error("Usage: ssh-debug-k8s-worker <host> <command> [args]\n"
+           f"Commands: {', '.join(sorted(COMMANDS))}")
+
+
+def _validate_host(host):
+    if not HOST_RE.fullmatch(host):
+        _error(f"Invalid hostname: {host}. Must match [a-z0-9][a-z0-9.-]+")
+
+
+def _validate_du_path(path):
+    if not path.startswith('/'):
+        _error(f"Path must be absolute: {path}")
+    normalized = posixpath.normpath(path)
+    if '..' in normalized.split('/'):
+        _error(f"Path traversal not allowed: {path}")
+    for allowed in ALLOWED_DU_PATHS:
+        if normalized == allowed or normalized.startswith(allowed + '/'):
+            return
+    _error(f"Path not allowed for du: {normalized}. Allowed: {', '.join(ALLOWED_DU_PATHS)}")
+
+
+def _ssh(host, cmd_args, timeout=SSH_TIMEOUT):
+    full_cmd = [
+        'ssh', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
+        host,
+    ] + cmd_args
+    result = subprocess.run(
+        full_cmd, capture_output=True, text=True, errors='replace', timeout=timeout,
+    )
+    return result.stdout, result.stderr, result.returncode
+
+
+def _ssh_or_error(host, cmd_args, label="command", timeout=SSH_TIMEOUT):
+    stdout, stderr, rc = _ssh(host, cmd_args, timeout)
+    if rc != 0:
+        return {"error": f"{label} failed (rc={rc}): {stderr.strip()[:500]}"}
+    text = stdout.strip()
+    if len(text) > MAX_FIELD_BYTES:
+        return text[:MAX_FIELD_BYTES] + "\n... [truncated]"
+    return text
+
+
+def _kubectl_raw(context, path):
+    cmd = ['kubectl', '--context', context, 'get', '--raw', path]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, errors='replace', timeout=KUBECTL_TIMEOUT,
+    )
+    if result.returncode != 0:
+        _error(f"kubectl get --raw failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        _error(f"kubectl returned non-JSON output: {result.stdout[:500]}")
+
+
+def _output(data):
+    print(json.dumps(data, indent=2))
+
+
+def _parse_int_arg(args, flag, default):
+    """Parse -n or --top style int arg from remaining args list."""
+    for i, a in enumerate(args):
+        if a == flag and i + 1 < len(args):
+            try:
+                return int(args[i + 1])
+            except ValueError:
+                pass
+        if a.startswith(f'{flag}='):
+            try:
+                return int(a.split('=', 1)[1])
+            except ValueError:
+                pass
+    return default
+
+
+def _parse_du_lines(text):
+    results = []
+    for line in text.strip().split('\n'):
+        parts = line.split('\t', 1)
+        if len(parts) == 2:
+            results.append({"path": parts[1].strip(), "size": parts[0].strip()})
+    return results
+
+
+# --- Commands ---
+
+def cmd_status(host, args):
+    output = {"host": host, "profile": "k8s-worker", "command": "status", "services": {}}
+    for svc in ['kubelet', 'containerd']:
+        result = _ssh_or_error(host, ['systemctl', 'is-active', svc], f'systemctl is-active {svc}')
+        if isinstance(result, dict):
+            output["services"][svc] = {"status": "error", "detail": result.get("error", "")}
+        else:
+            output["services"][svc] = {"status": result}
+    output["uptime"] = _ssh_or_error(host, ['uptime'], 'uptime')
+    output["memory"] = _ssh_or_error(host, ['free', '-h'], 'free')
+    _output(output)
+
+
+def cmd_config(host, args):
+    target = args[0] if args else 'all'
+    if target not in list(CONFIG_FILES) + ['all']:
+        _error(f"Unknown config target: {target}. Allowed: {', '.join(CONFIG_FILES)}, all")
+
+    output = {"host": host, "profile": "k8s-worker", "command": "config"}
+    targets = list(CONFIG_FILES) if target == 'all' else [target]
+    for t in targets:
+        path = CONFIG_FILES[t]
+        result = _ssh_or_error(host, ['sudo', '-n', 'cat', path], f'cat {path}')
+        output[t] = result
+    _output(output)
+
+
+def cmd_logs(host, args):
+    if args and args[0] not in LOG_SERVICES and not args[0].startswith('-'):
+        _error(f"Unknown service: {args[0]}. Allowed: {', '.join(LOG_SERVICES)}")
+    service = args[0] if args and args[0] in LOG_SERVICES else 'kubelet'
+    rest = args[1:] if args and args[0] in LOG_SERVICES else args
+    lines = _parse_int_arg(rest, '-n', 100)
+
+    output = {"host": host, "profile": "k8s-worker", "command": "logs", "service": service, "lines": lines}
+    result = _ssh_or_error(
+        host,
+        ['sudo', '-n', 'journalctl', '-u', service, '--no-pager', '-n', str(lines)],
+        f'journalctl -u {service}',
+    )
+    if isinstance(result, dict):
+        output["error"] = result.get("error", "")
+    else:
+        output["output"] = result
+    _output(output)
+
+
+def cmd_containers(host, args):
+    output = {"host": host, "profile": "k8s-worker", "command": "containers"}
+
+    # crictl images
+    images = _ssh_or_error(host, ['sudo', '-n', 'crictl', 'images', '-o', 'json'], 'crictl images')
+    if isinstance(images, dict):
+        output["images"] = images
+    else:
+        try:
+            img_data = json.loads(images)
+            img_list = []
+            for img in img_data.get('images', []):
+                tags = img.get('repoTags', [])
+                try:
+                    size_bytes = int(img.get('size', '0'))
+                except (ValueError, TypeError):
+                    size_bytes = 0
+                img_list.append({
+                    "tags": tags,
+                    "size_mb": round(size_bytes / 1024 / 1024, 1),
+                    "id": img.get('id', '')[:12],
+                })
+            img_list.sort(key=lambda x: x['size_mb'], reverse=True)
+            output["images"] = {
+                "count": len(img_list),
+                "total_mb": round(sum(i['size_mb'] for i in img_list), 1),
+                "top_20": img_list[:20],
+            }
+        except (json.JSONDecodeError, KeyError):
+            output["images"] = {"raw": images[:2000]}
+
+    # crictl ps -a
+    ps_out = _ssh_or_error(host, ['sudo', '-n', 'crictl', 'ps', '-a', '-o', 'json'], 'crictl ps')
+    if isinstance(ps_out, dict):
+        output["containers"] = ps_out
+    else:
+        try:
+            ps_data = json.loads(ps_out)
+            containers = ps_data.get('containers', [])
+            states = {}
+            for c in containers:
+                state = c.get('state', 'UNKNOWN')
+                states[state] = states.get(state, 0) + 1
+            output["containers"] = {"total": len(containers), "by_state": states}
+        except (json.JSONDecodeError, KeyError):
+            output["containers"] = {"raw": ps_out[:2000]}
+
+    # overlayfs snapshot count
+    snap_count = _ssh_or_error(
+        host,
+        ['sudo', '-n', 'sh', '-c', 'ls /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/ | wc -l'],
+        'snapshot count',
+    )
+    if not isinstance(snap_count, dict):
+        output["overlayfs_snapshots"] = int(snap_count.strip()) if snap_count.strip().isdigit() else snap_count
+
+    _output(output)
+
+
+def cmd_dmesg(host, args):
+    lines = _parse_int_arg(args, '-n', 50)
+
+    output = {"host": host, "profile": "k8s-worker", "command": "dmesg"}
+    result = _ssh_or_error(
+        host,
+        ['sudo', '-n', 'dmesg', '--level=err,warn', '-T', '--nopager'],
+        'dmesg',
+    )
+    if isinstance(result, dict):
+        output["error"] = result.get("error", "")
+    else:
+        all_lines = result.strip().split('\n')
+        output["total_lines"] = len(all_lines)
+        output["output"] = '\n'.join(all_lines[-lines:])
+    _output(output)
+
+
+def cmd_disk(host, args):
+    output = {"host": host, "profile": "k8s-worker", "command": "disk"}
+
+    df_out = _ssh_or_error(host, ['df', '-h', '/'], 'df')
+    if isinstance(df_out, dict):
+        output["df"] = df_out
+    else:
+        lines = df_out.strip().split('\n')
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            output["df"] = {
+                "filesystem": parts[0] if len(parts) > 0 else "",
+                "size": parts[1] if len(parts) > 1 else "",
+                "used": parts[2] if len(parts) > 2 else "",
+                "avail": parts[3] if len(parts) > 3 else "",
+                "use_pct": parts[4] if len(parts) > 4 else "",
+                "mounted_on": parts[5] if len(parts) > 5 else "",
+            }
+
+    path = args[0] if args else None
+    if path:
+        _validate_du_path(path)
+        du_out = _ssh_or_error(host, ['sudo', '-n', 'du', '-sh', path], f'du {path}')
+        if isinstance(du_out, dict):
+            output["du"] = du_out
+        else:
+            output["du"] = {"path": path, "size": du_out.split()[0] if du_out else ""}
+    else:
+        du_out = _ssh_or_error(host, ['sudo', '-n', 'du', '-sh', '/var/log', '/tmp'], 'du /var/log /tmp')
+        if isinstance(du_out, dict):
+            output["du"] = du_out
+        else:
+            output["du"] = _parse_du_lines(du_out)
+        output["note"] = "For containerd/kubelet breakdown, use 'containers' subcommand."
+
+    _output(output)
+
+
+def cmd_ephemeral(host, args):
+    if not args:
+        _error("Usage: ssh-debug-k8s-worker <host> ephemeral <kubectl-context> [--top N]")
+    context = args[0]
+    top_n = _parse_int_arg(args[1:], '--top', 20)
+
+    data = _kubectl_raw(context, f'/api/v1/nodes/{host}/proxy/stats/summary')
+
+    pods = []
+    for p in data.get('pods', []):
+        pod_ref = p.get('podRef', {})
+        ns = pod_ref.get('namespace', 'unknown')
+        name = pod_ref.get('name', 'unknown')
+        eph = p.get('ephemeral-storage', {})
+        try:
+            used = int(eph.get('usedBytes', 0) or 0)
+        except (ValueError, TypeError):
+            used = 0
+
+        containers = []
+        for c in p.get('containers', []):
+            try:
+                rootfs = int(c.get('rootfs', {}).get('usedBytes', 0) or 0)
+                logs = int(c.get('logs', {}).get('usedBytes', 0) or 0)
+            except (ValueError, TypeError):
+                rootfs, logs = 0, 0
+            if rootfs > 0 or logs > 0:
+                containers.append({
+                    "name": c.get('name', 'unknown'),
+                    "rootfs_mb": round(rootfs / 1024 / 1024, 1),
+                    "logs_mb": round(logs / 1024 / 1024, 1),
+                })
+
+        pods.append({
+            "namespace": ns,
+            "pod": name,
+            "ephemeral_mb": round(used / 1024 / 1024, 1),
+            "containers": containers,
+        })
+
+    pods.sort(key=lambda x: x['ephemeral_mb'], reverse=True)
+    pods = pods[:top_n]
+
+    node_fs = data.get('node', {}).get('fs', {})
+    output = {
+        "host": host,
+        "profile": "k8s-worker",
+        "command": "ephemeral",
+        "context": context,
+        "node_fs": {
+            "capacity_gb": round(int(node_fs.get('capacityBytes', 0) or 0) / 1024**3, 1),
+            "available_gb": round(int(node_fs.get('availableBytes', 0) or 0) / 1024**3, 1),
+            "used_gb": round(int(node_fs.get('usedBytes', 0) or 0) / 1024**3, 1),
+        },
+        "top_pods": pods,
+    }
+    _output(output)
+
+
+COMMANDS = {
+    'status': cmd_status,
+    'config': cmd_config,
+    'logs': cmd_logs,
+    'containers': cmd_containers,
+    'dmesg': cmd_dmesg,
+    'disk': cmd_disk,
+    'ephemeral': cmd_ephemeral,
+}
+
+
+def main():
+    argv = sys.argv[1:]
+    if len(argv) < 2:
+        _usage()
+
+    host = argv[0]
+    command = argv[1]
+    remaining = argv[2:]
+
+    _validate_host(host)
+
+    handler = COMMANDS.get(command)
+    if not handler:
+        _error(f"Unknown command: {command}. Available: {', '.join(sorted(COMMANDS))}")
+
+    try:
+        handler(host, remaining)
+    except subprocess.TimeoutExpired as e:
+        _error(f"Command timed out after {e.timeout}s on {host}")
+    except Exception as e:
+        _error(str(e))
+
+
+if __name__ == '__main__':
+    main()
