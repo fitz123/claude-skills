@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Update YouTrack issue fields (summary, description, or any text field)
+# Usage: yt-update ISSUE-ID --summary "new title"
+#    or: yt-update ISSUE-ID --description "text" | --description-file FILE
+#    or: yt-update ISSUE-ID --summary "title" --description-file FILE  (combined)
+#
+# Examples:
+#   yt-update DVPS-1234 --summary "New title"
+#   yt-update DVPS-1234 --description-file /tmp/desc.md
+#   yt-update DVPS-1234 --summary "New title" --description-file /tmp/desc.md
+set -euo pipefail
+
+ISSUE_ID="${1:?Usage: yt-update ISSUE-ID [--summary TEXT] [--description TEXT | --description-file FILE]}"
+shift
+
+SUMMARY=""
+DESCRIPTION=""
+DESC_FILE=""
+DESCRIPTION_SET=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --summary|--description|--description-file)
+      [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 1; }
+      ;;&
+    --summary) SUMMARY="$2"; shift 2 ;;
+    --description) DESCRIPTION="$2"; DESCRIPTION_SET=1; shift 2 ;;
+    --description-file) DESC_FILE="$2"; DESCRIPTION_SET=1; shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$SUMMARY" && "$DESCRIPTION_SET" == "0" ]]; then
+  echo "Error: at least one of --summary, --description, --description-file required" >&2
+  exit 1
+fi
+
+if [[ -n "$DESC_FILE" ]]; then
+  [[ -f "$DESC_FILE" ]] || { echo "Error: file not found: $DESC_FILE" >&2; exit 1; }
+fi
+
+BASE="https://ordercapital.myjetbrains.com/youtrack/api"
+TOKEN=$(printenv YOUTRACK_TOKEN)
+
+TMPFILE=$(mktemp "/tmp/yt-update-${ISSUE_ID}-XXXXXX.json")
+trap 'rm -f "$TMPFILE"' EXIT
+
+# Build JSON payload: pass file path to python so content is read inside python
+# (avoids shell variable truncation of trailing newlines and argv size limits)
+python3 -c "
+import json, sys
+payload = {}
+summary, desc_file, desc_inline, desc_set = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+if summary:
+    payload['summary'] = summary
+if desc_set == '1':
+    if desc_file:
+        with open(desc_file) as f:
+            payload['description'] = f.read()
+    else:
+        payload['description'] = desc_inline
+with open(sys.argv[5], 'w') as f:
+    json.dump(payload, f)
+" "$SUMMARY" "$DESC_FILE" "$DESCRIPTION" "$DESCRIPTION_SET" "$TMPFILE"
+
+RESULT=$(curl -s -k -m 30 -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  "${BASE}/issues/${ISSUE_ID}?fields=idReadable,summary" \
+  -d @"$TMPFILE")
+
+echo "$RESULT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if 'idReadable' in d:
+    print(f\"Updated {d['idReadable']}: {d['summary']}\")
+else:
+    print(json.dumps(d, indent=2))
+    sys.exit(1)
+"

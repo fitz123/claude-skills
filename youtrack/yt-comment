@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Add a comment to a YouTrack issue
+# Usage: yt-comment DVPS-1234 "comment text"
+#    or: yt-comment DVPS-1234 --file /path/to/comment.md
+set -euo pipefail
+
+ISSUE_ID="${1:?Usage: yt-comment ISSUE-ID \"text\" | --file FILE}"
+shift
+BASE="https://ordercapital.myjetbrains.com/youtrack/api"
+TOKEN=$(printenv YOUTRACK_TOKEN)
+TMPFILE=$(mktemp "/tmp/yt-comment-${ISSUE_ID}-XXXXXX.json")
+trap 'rm -f "$TMPFILE"' EXIT
+
+# Parse input: --file or inline text
+if [[ "${1:-}" == "--file" ]]; then
+  COMMENT_FILE="${2:?Usage: yt-comment ISSUE-ID --file FILE}"
+  if [[ ! -f "$COMMENT_FILE" ]]; then
+    echo "Error: file not found: $COMMENT_FILE" >&2
+    exit 1
+  fi
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+with open(sys.argv[2], 'w') as f:
+    json.dump({'text': content}, f)
+" "$COMMENT_FILE" "$TMPFILE"
+else
+  TEXT="$*"
+  if [[ -z "$TEXT" ]]; then
+    echo "Error: no comment text provided" >&2
+    exit 1
+  fi
+  python3 -c "
+import json, sys
+with open(sys.argv[1], 'w') as f:
+    json.dump({'text': ' '.join(sys.argv[2:])}, f)
+" "$TMPFILE" "$@"
+fi
+
+RESULT=$(curl -s -k -m 30 -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  "${BASE}/issues/${ISSUE_ID}/comments?fields=id,text,created,author(login)" \
+  -d @"$TMPFILE")
+
+echo "$RESULT" | python3 -c "
+import json, sys
+from datetime import datetime, timezone
+d = json.load(sys.stdin)
+if 'id' in d:
+    ts = datetime.fromtimestamp(d['created']/1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    author = d.get('author', {}).get('login', '?')
+    preview = d['text'][:200]
+    if len(d['text']) > 200:
+        preview += '...'
+    print(f'Comment added by {author} at {ts}')
+    print(preview)
+else:
+    print(json.dumps(d, indent=2))
+    sys.exit(1)
+"
