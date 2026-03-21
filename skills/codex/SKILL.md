@@ -12,7 +12,7 @@ Independent analysis using OpenAI Codex CLI with extreme reasoning effort.
 ## Command
 
 ```bash
-codex exec -m gpt-5.3-codex -c model_reasoning_effort=xhigh -o /tmp/codex_out.md \
+codex exec -c model_reasoning_effort=xhigh -o /tmp/codex_out.md \
   "CONTEXT: ...
 QUESTION: ...
 PROVIDE: ..."
@@ -25,9 +25,12 @@ cat /tmp/codex_out.md
 
 **Required flags:**
 
-- `-m gpt-5.3-codex` - model with xhigh support
 - `-c model_reasoning_effort=xhigh` - extreme reasoning
 - `-o /tmp/codex_out.md` - capture full output (prevents truncation)
+
+**Optional flags:**
+
+- `-m <model>` - override model (omit to use default from `~/.codex/config.toml`)
 
 ## Prompt Structure
 

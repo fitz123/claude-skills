@@ -183,13 +183,13 @@ This step runs iteratively — codex reviews, you evaluate and fix, codex review
 
 **Iteration loop:**
 
-5a. Run codex:
+5a. Run codex (omit `-m` to use the model from codex config):
 
 ```
-codex exec -m gpt-5.3-codex -c model_reasoning_effort=xhigh "Review the code changes on this branch for bugs, security issues, and logic errors. Run git diff {base}...HEAD to see changes. Read source files for context. Report: file:line, issue, impact, fix. If no issues: No issues found."
+codex exec -c model_reasoning_effort=xhigh "Review the code changes on this branch for bugs, security issues, and logic errors. Run git diff {base}...HEAD to see changes. Read source files for context. Report: file:line, issue, impact, fix. If no issues: No issues found."
 ```
 
-Note: replace `{base}` with the actual base branch. Adjust the model (`-m`) and reasoning effort (`-c`) flags based on your codex version and available models.
+Note: replace `{base}` with the actual base branch. If codex returns an authentication or model error (e.g. "model is not supported"), skip this step entirely and proceed to Step 6 with a note — do NOT try alternative model names.
 
 5b. Evaluate codex output — for EACH finding, read the code and trace the flow:
 
