@@ -239,7 +239,7 @@ model = opus, iterations = 5, codex = on, reasoning = xhigh
 
 Ralphex → Telegram при complete/error.
 
-- Config: `notify_channels = custom`, `notify_custom_script = ~/.minime/workspace/.ralphex/scripts/notify-minime.sh`
+- Config: `notify_channels = custom`, `notify_custom_script = $HOME/.minime/workspace/.ralphex/scripts/notify-minime.sh`
 - Script: `.ralphex/scripts/notify-minime.sh` — получает Result JSON на stdin, парсит, шлёт через `deliver.sh`
 - Канал: Minime HQ, Ops topic (chat `-1003894624477`, thread `591`)
 - Result JSON также сохраняется в `/tmp/ralphex-last-result.json`
