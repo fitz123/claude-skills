@@ -202,7 +202,7 @@ Before launching any agents, set these variables (all must be explicitly substit
   ```
   Bash(command="echo ~/.minime/workspace/reference/plans/<PLAN_DATE>-<PLAN_SLUG>.md")
   ```
-  Capture the output (an absolute path like `/Users/ninja/.minime/workspace/reference/plans/<PLAN_DATE>-<PLAN_SLUG>.md`) as `PLAN_FILE_PATH`. Use this absolute path everywhere — never the tilde form.
+  Capture the output (a fully expanded absolute path, e.g. `/home/user/.minime/workspace/reference/plans/<PLAN_DATE>-<PLAN_SLUG>.md`) as `PLAN_FILE_PATH`. Use this absolute path everywhere — never the tilde form.
 
 ---
 
@@ -1008,7 +1008,7 @@ The orchestrator collects both outputs only AFTER both Agent tool calls return (
   Write(file_path="<PLAN_TMPDIR>/state.json", content='{"question_round":<QUESTION_ROUND>,"validation_round":<VALIDATION_ROUND>,"verification_round":<VERIFICATION_ROUND>,"plan_round":<PLAN_ROUND>}')
   ```
 - Cap check: if `VALIDATION_ROUND > MAX_VALIDATION_ROUNDS` after increment → **do not launch validators**. Escalate to user with full disagreement summary (all prior validator outputs) and ask how to proceed. Do not proceed.
-- `PLAN_FILE_PATH` = the absolute path captured in Phase 0.4 (e.g., `/Users/ninja/.minime/workspace/reference/plans/<PLAN_DATE>-<PLAN_SLUG>.md`). Never use the tilde form — substitute the actual absolute path into all validator prompts.
+- `PLAN_FILE_PATH` = the absolute path captured in Phase 0.4 (e.g., `/home/user/.minime/workspace/reference/plans/<PLAN_DATE>-<PLAN_SLUG>.md`). Never use the tilde form — substitute the actual absolute path into all validator prompts.
 
 All `<PLACEHOLDERS>` in the Agent blocks below must be substituted with actual values before launching.
 
