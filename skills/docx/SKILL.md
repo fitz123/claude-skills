@@ -28,7 +28,7 @@ pdf <file> [output.pdf]                              # export to PDF
 ### Read Document
 
 ```bash
-uv run --with python-docx python3 /Users/ninja/.claude/skills/docx/scripts/docx_tool.py read "/path/to/file.docx"
+uv run --with python-docx python3 ${CLAUDE_PLUGIN_ROOT}/skills/docx/scripts/docx_tool.py read "/path/to/file.docx"
 ```
 
 Output: paragraphs with indices/styles, tables with row/col, content controls, headers/footers.
@@ -38,7 +38,7 @@ Output: paragraphs with indices/styles, tables with row/col, content controls, h
 Replaces placeholder text while preserving formatting. Handles Word's run-splitting.
 
 ```bash
-uv run --with python-docx python3 /Users/ninja/.claude/skills/docx/scripts/docx_tool.py edit "/path/to/file.docx" '{"{{NAME}}": "John Doe", "{{DATE}}": "2026-02-09"}' "/path/to/output.docx"
+uv run --with python-docx python3 ${CLAUDE_PLUGIN_ROOT}/skills/docx/scripts/docx_tool.py edit "/path/to/file.docx" '{"{{NAME}}": "John Doe", "{{DATE}}": "2026-02-09"}' "/path/to/output.docx"
 ```
 
 If output path omitted, overwrites the input file.
@@ -46,7 +46,7 @@ If output path omitted, overwrites the input file.
 ### Set Table Cell
 
 ```bash
-uv run --with python-docx python3 /Users/ninja/.claude/skills/docx/scripts/docx_tool.py set-cell "/path/to/file.docx" 0 2 3 "New Value" "/path/to/output.docx"
+uv run --with python-docx python3 ${CLAUDE_PLUGIN_ROOT}/skills/docx/scripts/docx_tool.py set-cell "/path/to/file.docx" 0 2 3 "New Value" "/path/to/output.docx"
 ```
 
 Arguments: `<table_index> <row> <col> "value"`. Zero-indexed.

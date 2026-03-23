@@ -9,8 +9,8 @@ Manage Ninja's personal tasks via `bd` (beads). Use the current agent workspace;
 
 ## Workspace binding
 Beads uses Dolt (not SQLite) and auto-discovers `.beads/` from cwd. To target a specific workspace, `cd` into it first:
-- Main: `cd /Users/ninja/.minime/workspace && bd ...`
-- Bot: `cd /Users/ninja/.minime/bot && bd ...`
+- Main: `cd ~/.minime/workspace && bd ...`
+- Bot: `cd ~/.minime/bot && bd ...`
 
 Issue prefixes follow workspace: `workspace-*` (main), `bot-*` (bot).
 

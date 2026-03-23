@@ -66,8 +66,8 @@ Without frontmatter → uses global model from `claude_args --model`.
 
 ## Repository Selection (ОБЯЗАТЕЛЬНО)
 
-**Bot code** (`bot/src/`) → run from **public repo** (`/Users/ninja/src/claude-code-bot/`). Changes go through PR to `fitz123/claude-code-bot`.
-**Workspace code** (skills, rules, scripts, config) → run from **workspace** (`/Users/ninja/.minime/workspace/`).
+**Bot code** (`bot/src/`) → run from **public repo** (`~/src/claude-code-bot/`). Changes go through PR to `fitz123/claude-code-bot`.
+**Workspace code** (skills, rules, scripts, config) → run from **workspace** (`~/.minime/workspace/`).
 
 Rule: его задачи — из его репы, наши — из нашей.
 
@@ -79,7 +79,7 @@ Rule: его задачи — из его репы, наши — из нашей
 Ralphex работает в **изолированном git worktree** (`.ralphex/worktrees/<branch>`). Основная рабочая директория остаётся на main — параллельные сессии не затрагиваются. Грязный worktree = instant fail.
 
 ```bash
-cd /Users/ninja/.minime/workspace
+cd ~/.minime/workspace
 git status --short 2>&1
 ```
 
@@ -239,7 +239,7 @@ model = opus, iterations = 5, codex = on, reasoning = xhigh
 
 Ralphex → Telegram при complete/error.
 
-- Config: `notify_channels = custom`, `notify_custom_script = /Users/ninja/.minime/workspace/.ralphex/scripts/notify-minime.sh`
+- Config: `notify_channels = custom`, `notify_custom_script = ~/.minime/workspace/.ralphex/scripts/notify-minime.sh`
 - Script: `.ralphex/scripts/notify-minime.sh` — получает Result JSON на stdin, парсит, шлёт через `deliver.sh`
 - Канал: Minime HQ, Ops topic (chat `-1003894624477`, thread `591`)
 - Result JSON также сохраняется в `/tmp/ralphex-last-result.json`

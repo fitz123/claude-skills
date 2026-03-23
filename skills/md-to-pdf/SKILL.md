@@ -9,7 +9,7 @@ Goal: take a `.md` file from a repo and produce a good-looking PDF.
 
 ## Path Resolution
 
-`<SKILL_DIR>` = `/Users/ninja/.minime/workspace/.claude/skills/md-to-pdf`
+`<SKILL_DIR>` = `${CLAUDE_PLUGIN_ROOT}/skills/md-to-pdf`
 
 ## Quick Reference
 

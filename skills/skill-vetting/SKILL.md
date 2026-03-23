@@ -17,7 +17,7 @@ git clone <skill-repo-url> skill-inspect
 cd skill-inspect
 
 # Run scanner
-python3 /Users/ninja/.minime/workspace/.claude/skills/skill-vetting/scripts/scan.py .
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/skill-vetting/scripts/scan.py .
 
 # Manual review
 cat SKILL.md
@@ -38,7 +38,7 @@ cd skill-NAME
 ### 2. Run Automated Scanner
 
 ```bash
-python3 /Users/ninja/.minime/workspace/.claude/skills/skill-vetting/scripts/scan.py .
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/skill-vetting/scripts/scan.py .
 ```
 
 **Exit codes:** 0 = Clean, 1 = Issues found
