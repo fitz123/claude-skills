@@ -1,5 +1,5 @@
 ---
-name: ralphex
+name: ralph-review
 description: Runs parallel multi-agent code review (quality, implementation, testing, simplification, documentation), verifies findings, fixes confirmed issues, then iterates automatically (codex cross-review up to 3 rounds, second-pass up to 3 rounds) until clean. Use when reviewing branch changes, after implementing features, or when user says 'review' or 'ralphex'.
 argument-hint: "[base-branch]"
 allowed-tools:
