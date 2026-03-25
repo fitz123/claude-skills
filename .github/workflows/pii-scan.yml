@@ -6,6 +6,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   gitleaks:
     uses: fitz123/claude-code-bot/.github/workflows/gitleaks-reusable.yml@main
