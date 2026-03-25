@@ -6,9 +6,7 @@ Shared Claude Code skills for planning, code review, and documentation.
 
 | Skill | Description |
 |-------|-------------|
-| `brainstorm` | Collaborative idea-to-design dialogue with one-at-a-time questions |
-| `plan` | Structured implementation planning with auto-review and plannotator integration |
-| `ralphex-plan` | Create plans for ralphex automated code review |
+| `brainstorm` | Collaborative idea-to-design dialogue, then plan mode with plannotator or ralphex |
 | `ralph-review` | Parallel multi-agent code review (prompt-only) |
 | `md-to-pdf` | Convert Markdown to clean A4 PDFs with Mermaid support |
 | `docx` | Read, edit, and export Microsoft Word documents |
@@ -22,6 +20,13 @@ From [umputun/cc-thingz](https://github.com/umputun/cc-thingz):
 ```bash
 /plugin marketplace add umputun/cc-thingz
 /plugin install thinking-tools --scope user
+```
+
+From [umputun/ralphex](https://github.com/umputun/ralphex):
+
+```bash
+/plugin marketplace add umputun/ralphex
+/plugin install ralphex --scope user
 ```
 
 ## Installation

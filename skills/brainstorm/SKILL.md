@@ -9,11 +9,14 @@ allowed-tools:
   - Bash(git:*)
   - AskUserQuestion
   - Skill
+  - Agent(*)
+  - EnterPlanMode
+  - ExitPlanMode
 ---
 
 # Brainstorm
 
-Turn ideas into designs through collaborative dialogue before implementation.
+Turn ideas into designs through collaborative dialogue, then enter plan mode for implementation.
 
 ## Process
 
@@ -63,33 +66,47 @@ After approach is selected:
 
 Do not present entire design at once. Incremental validation catches misunderstandings early.
 
-### Phase 4: Next Steps
+### Phase 4: Plan Mode + Plannotator
 
-After design is validated, use AskUserQuestion tool:
+After design is validated, always enter plan mode for structured planning:
+
+1. Call `EnterPlanMode` — the system provides a plan file path in the plan mode instructions
+2. Write a structured implementation plan to the plan mode file. Include all brainstorm context: selected approach, design decisions, files involved, constraints, testing preference. Structure as tasks with `- [ ]` checkboxes
+3. Call `ExitPlanMode` — this triggers plannotator's visual UI where the user can annotate, approve, or request changes
+
+When the user submits annotations via plannotator, their feedback appears as a user message. Revise the plan and call `ExitPlanMode` again. Repeat until approved.
+
+### Phase 5: Execute
+
+After plan is approved, use AskUserQuestion tool:
 
 ```json
 {
   "questions": [{
-    "question": "Design looks complete. What's next?",
-    "header": "Next step",
+    "question": "Plan approved. How to execute?",
+    "header": "Execution",
     "options": [
-      {"label": "Write plan (Recommended)", "description": "Create implementation plan via /plan with full brainstorm context"},
-      {"label": "Start now", "description": "Begin implementing directly"}
+      {"label": "Start now (Recommended)", "description": "Begin implementing task by task"},
+      {"label": "Ralphex plan", "description": "Create a ralphex plan for autonomous execution (requires ralphex plugin)"}
     ],
     "multiSelect": false
   }]
 }
 ```
 
-- **Write plan**: invoke the plan skill using the Skill tool. Pass a context summary as arguments so the plan skill has full context without re-asking questions:
+#### Start now
 
-  ```
-  Skill(skill="plan", args="<one-paragraph summary of: selected approach, key design decisions, files involved, constraints, testing preference>")
-  ```
+Begin implementing starting with task 1 from the approved plan.
 
-  The plan skill will skip its own question and approach-exploration steps when it receives brainstorm context.
+#### Ralphex plan
 
-- **Start now**: proceed directly if design is simple enough
+Invoke the ralphex-plan skill (from the ralphex companion plugin), passing full brainstorm context and the approved plan:
+
+```
+Skill(skill="ralphex:ralphex-plan", args="<summary of: selected approach, design decisions, files involved, constraints>")
+```
+
+The ralphex-plan skill creates a plan file in `docs/plans/` formatted for autonomous execution by the ralphex CLI. Requires the `umputun/ralphex` plugin to be installed.
 
 ## Example Session
 
@@ -111,12 +128,17 @@ Phase 3: [presents design in sections]
   Section 2: Delivery mechanism → user approves
   Section 3: Retry strategy → user adjusts
 
-Phase 4: [AskUserQuestion: Write plan / Start now]
-  → User picks "Write plan"
-  → Skill(skill="plan", args="webhook support via HTTP POST per event,
-     events: order.created/updated/cancelled, async delivery with
-     3 retries exponential backoff, files: src/api/webhooks/,
-     src/models/webhook.go, testing: regular")
+Phase 4: [always enters plan mode]
+  → EnterPlanMode → writes plan with tasks → ExitPlanMode
+  → plannotator opens in browser
+  → user annotates: "add rate limiting to Task 3"
+  → revises plan, ExitPlanMode again
+  → user approves
+
+Phase 5: [AskUserQuestion: Start now / Ralphex plan]
+  → User picks "Start now" → begins task 1
+  or
+  → User picks "Ralphex plan" → creates docs/plans/ file for ralphex CLI
 ```
 
 ## Key Principles
