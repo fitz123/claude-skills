@@ -1,8 +1,19 @@
 ---
 name: plan
 description: Create structured implementation plan in docs/plans/. Use when user says 'plan', 'write a plan', 'make a plan', or after brainstorming to formalize design into actionable tasks. NOT for ralphex-specific plans — use ralphex-plan skill for those.
-argument-hint: describe the feature or task to plan
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion, Agent, EnterPlanMode, ExitPlanMode
+argument-hint: "[description] or context summary from brainstorm"
+allowed-tools:
+  - Read(*)
+  - Write(*)
+  - Edit(*)
+  - Glob(*)
+  - Grep(*)
+  - Bash(git:*)
+  - Bash(mkdir:*)
+  - AskUserQuestion
+  - Agent(*)
+  - EnterPlanMode
+  - ExitPlanMode
 ---
 
 # Implementation Plan
@@ -13,18 +24,26 @@ Create an implementation plan in `docs/plans/yyyymmdd-<task-name>.md`.
 
 Before asking questions, understand what the user is working on:
 
-1. **Parse arguments** to identify intent:
+1. **Parse arguments** to identify intent and detect brainstorm context:
+   - If arguments contain a context summary from brainstorm (approach, decisions, files, constraints), extract these and skip Steps 1 and 1.5
    - "add feature Z" / "implement W" → feature development
    - "fix bug" / "debug issue" → bug fix plan
    - "refactor X" / "improve Y" → refactoring plan
    - "migrate to Z" / "upgrade W" → migration plan
    - generic request → explore current work
 
-2. **Launch Explore agent** to gather relevant context based on intent:
-   - Locate related existing code and patterns
-   - Check project structure and similar implementations
-   - Identify affected components and dependencies
-   - Check recent changes in problem areas
+2. **Launch Explore agent** (subagent_type: "Explore") to gather relevant context based on intent. Provide the agent with a focused search prompt:
+
+   ```
+   Agent(
+     subagent_type="Explore",
+     description="plan-context-exploration",
+     prompt="Explore the codebase for context related to: <TASK_DESCRIPTION>.
+     Find: relevant source files and patterns, project structure,
+     affected components and dependencies, recent changes in problem areas.
+     Working directory: <CWD>"
+   )
+   ```
 
 3. **Synthesize findings** into context summary
 
@@ -55,7 +74,9 @@ Once the problem is understood, propose implementation approaches:
 
 ## Step 2: Create Plan File
 
-Check `docs/plans/` for existing files, then create `docs/plans/yyyymmdd-<task-name>.md` (use current date).
+Run `mkdir -p docs/plans` to ensure the directory exists. Check for existing files, then create `docs/plans/yyyymmdd-<task-name>.md` (use current date).
+
+Store the full path as `PLAN_FILE_PATH` for use in later steps.
 
 ### Plan Structure
 
@@ -107,7 +128,15 @@ Check `docs/plans/` for existing files, then create `docs/plans/yyyymmdd-<task-n
 
 ## Step 3: Auto-Review
 
-After writing the plan, launch the `plan-review` agent to validate quality. Pass the exact plan file path in the agent prompt so it doesn't have to search.
+After writing the plan, launch the `plan-review` agent to validate quality. Pass the exact plan file path so it reviews the right file:
+
+```
+Agent(
+  subagent_type="plan-review",
+  description="plan-auto-review",
+  prompt="Review the implementation plan at: <PLAN_FILE_PATH>"
+)
+```
 
 The plan-review agent (read-only, opus model) checks:
 - Problem definition and solution correctness
@@ -115,25 +144,37 @@ The plan-review agent (read-only, opus model) checks:
 - Testing requirements per task
 - Task granularity and convention adherence
 
-If review returns **NEEDS REVISION**:
-1. Address all critical and important issues
-2. Re-run the plan-review agent
-3. Maximum 3 review rounds — if still NEEDS REVISION after 3 rounds, present remaining issues to user and proceed
+**Review loop (max 3 rounds):**
 
-If review returns **APPROVE**, proceed to Step 4.
+```
+REVIEW_ROUND = 0
+
+loop:
+  REVIEW_ROUND += 1
+  if REVIEW_ROUND > 3:
+    present remaining issues to user and proceed to Step 4
+    break
+
+  launch plan-review agent with PLAN_FILE_PATH
+
+  if verdict == APPROVE:
+    proceed to Step 4
+    break
+
+  if verdict == NEEDS REVISION:
+    address all critical and important issues in the plan file
+    continue loop
+```
 
 ## Step 4: Present to User via Plannotator
 
-After auto-review passes:
+After auto-review passes (or max rounds reached):
 
-1. Call `EnterPlanMode` to enter plan mode
-2. Write the plan content to the plan mode file (the path provided by the system in plan mode)
-3. Call `ExitPlanMode` — this triggers plannotator's visual UI where the user can annotate, approve, or request changes
+1. Call `EnterPlanMode` — this activates plan mode. The system will provide a plan file path in the plan mode instructions (visible in the system message). This is a separate file from `docs/plans/`
+2. Write the plan content to the plan mode file path provided by the system
+3. Call `ExitPlanMode` — this triggers plannotator's visual UI in the browser where the user can annotate, approve, or request changes
 
-If user requests changes via plannotator annotations:
-1. Read the annotations and revise the plan (both the plan mode file and `docs/plans/` file)
-2. Call `ExitPlanMode` again to re-trigger plannotator
-3. Repeat until approved
+**How plannotator feedback works:** When the user submits annotations in plannotator, their feedback appears as a user message in the conversation. Read the feedback, revise the plan (update both the plan mode file and the `docs/plans/` file), then call `ExitPlanMode` again. Repeat until the user approves.
 
 After approval, use AskUserQuestion:
 
@@ -153,6 +194,26 @@ After approval, use AskUserQuestion:
 
 - **Start implementation**: commit plan, begin with task 1
 - **Done**: commit plan with message like "docs: add <topic> implementation plan"
+
+## Example Session
+
+```
+User: /plan (invoked from brainstorm with context)
+  → Step 0: detects brainstorm context, skips Steps 1 and 1.5
+  → Step 2: writes docs/plans/20260325-webhook-support.md
+  → Step 3: launches plan-review agent
+    Round 1: NEEDS REVISION (Task 2 bundles auth + delivery)
+    → fixes plan, splits Task 2
+    Round 2: APPROVE
+  → Step 4: EnterPlanMode → writes plan to plan mode file → ExitPlanMode
+    → plannotator opens in browser
+    → user adds annotation: "add rate limiting to Task 3"
+    → revises plan, calls ExitPlanMode again
+    → user approves
+  → AskUserQuestion: Start / Done
+    → user picks "Start implementation"
+    → commits plan, begins Task 1
+```
 
 ## Key Principles
 

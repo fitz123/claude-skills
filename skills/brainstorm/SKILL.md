@@ -1,7 +1,14 @@
 ---
 name: brainstorm
 description: Turn ideas into designs through collaborative dialogue before implementation. Use when user says 'brainstorm', 'let's brainstorm', 'deep analysis', 'think through', 'help me design', 'explore options for', or when user asks for thorough analysis of changes, features, or architectural decisions.
-allowed-tools: Read, Glob, Grep, Bash, AskUserQuestion, Skill
+argument-hint: topic or idea to brainstorm
+allowed-tools:
+  - Read(*)
+  - Glob(*)
+  - Grep(*)
+  - Bash(git:*)
+  - AskUserQuestion
+  - Skill
 ---
 
 # Brainstorm
@@ -74,8 +81,43 @@ After design is validated, use AskUserQuestion tool:
 }
 ```
 
-- **Write plan**: invoke `/plan` skill. Pass brainstorm context (discovered files, selected approach, design decisions, constraints) as arguments so the plan skill has full context without re-asking questions
+- **Write plan**: invoke the plan skill using the Skill tool. Pass a context summary as arguments so the plan skill has full context without re-asking questions:
+
+  ```
+  Skill(skill="plan", args="<one-paragraph summary of: selected approach, key design decisions, files involved, constraints, testing preference>")
+  ```
+
+  The plan skill will skip its own question and approach-exploration steps when it receives brainstorm context.
+
 - **Start now**: proceed directly if design is simple enough
+
+## Example Session
+
+```
+User: /brainstorm add webhook support to our API
+
+Phase 1: [reads codebase, finds existing API structure]
+  Q: "What events should trigger webhooks?" (multiple choice)
+  Q: "Should webhooks be async or sync?" (multiple choice)
+  Q: "Any delivery guarantees needed?" (multiple choice)
+
+Phase 2: [proposes approaches]
+  Option A: Simple HTTP POST per event (recommended)
+  Option B: Message queue with worker
+  → User picks Option A
+
+Phase 3: [presents design in sections]
+  Section 1: Event registration model → user approves
+  Section 2: Delivery mechanism → user approves
+  Section 3: Retry strategy → user adjusts
+
+Phase 4: [AskUserQuestion: Write plan / Start now]
+  → User picks "Write plan"
+  → Skill(skill="plan", args="webhook support via HTTP POST per event,
+     events: order.created/updated/cancelled, async delivery with
+     3 retries exponential backoff, files: src/api/webhooks/,
+     src/models/webhook.go, testing: regular")
+```
 
 ## Key Principles
 
