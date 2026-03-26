@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Turn ideas into designs through collaborative dialogue before implementation. Use when user says 'brainstorm', 'let's brainstorm', 'deep analysis', 'think through', 'help me design', 'explore options for', or when user asks for thorough analysis of changes, features, or architectural decisions.
-argument-hint: topic or idea to brainstorm
+argument-hint: "[topic]"
 allowed-tools:
   - Read(*)
   - Glob(*)
@@ -74,7 +74,7 @@ After design is validated, always enter plan mode for structured planning:
 2. Write a structured implementation plan to the plan mode file. Include all brainstorm context: selected approach, design decisions, files involved, constraints, testing preference. Structure as tasks with `- [ ]` checkboxes
 3. Call `ExitPlanMode` — this triggers plannotator's visual UI where the user can annotate, approve, or request changes
 
-When the user submits annotations via plannotator, their feedback appears as a user message. Revise the plan and call `ExitPlanMode` again. Repeat until approved.
+**Revision loop:** When the user submits annotations via plannotator, their feedback appears as a user message. The system automatically re-enters plan mode. Revise the plan in the plan mode file and call `ExitPlanMode` again to re-trigger plannotator. Repeat until approved.
 
 ### Phase 5: Execute
 
@@ -106,7 +106,10 @@ Invoke the ralphex-plan skill (from the ralphex companion plugin), passing full 
 Skill(skill="ralphex:ralphex-plan", args="<summary of: selected approach, design decisions, files involved, constraints>")
 ```
 
-The ralphex-plan skill creates a plan file in `docs/plans/` formatted for autonomous execution by the ralphex CLI. Requires the `umputun/ralphex` plugin to be installed.
+The ralphex-plan skill creates a plan file in `docs/plans/` formatted for autonomous execution by the ralphex CLI.
+
+**Requires the `umputun/ralphex` plugin.** If the Skill call fails (plugin not installed), inform the user:
+> Ralphex plugin not installed. Install with: `/plugin marketplace add umputun/ralphex` then `/plugin install ralphex --scope user`
 
 ## Example Session
 

@@ -1,7 +1,7 @@
 {
   "name": "claude-skills",
-  "version": "1.1.0",
-  "description": "Shared Claude Code skills: planning, review, docs, task management",
+  "version": "2.0.0",
+  "description": "Shared Claude Code skills: brainstorming, code review, docs",
   "author": {
     "name": "fitz123"
   }

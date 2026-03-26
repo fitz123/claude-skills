@@ -15,7 +15,7 @@ Shared Claude Code skills for planning, code review, and documentation.
 
 ## Companion Plugins
 
-From [umputun/cc-thingz](https://github.com/umputun/cc-thingz):
+From [umputun/cc-thingz](https://github.com/umputun/cc-thingz) — `thinking-tools` provides `ask-codex`, `dialectic`, and `root-cause-investigator`:
 
 ```bash
 /plugin marketplace add umputun/cc-thingz
