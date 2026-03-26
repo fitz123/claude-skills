@@ -21,7 +21,7 @@ Start any feature, refactor, or investigation with `/brainstorm`. It walks throu
 
 ## Skills
 
-### [`brainstorm`](skills/brainstorm/SKILL.md)
+### [`brainstorm`](plugin/skills/brainstorm/SKILL.md)
 
 The main planning skill. Conversational dialogue that turns ideas into validated designs with structured plan output.
 
@@ -29,7 +29,7 @@ The main planning skill. Conversational dialogue that turns ideas into validated
 /brainstorm add webhook support to our API
 ```
 
-### [`ralph-review`](skills/ralph-review/SKILL.md)
+### [`ralph-review`](plugin/skills/ralph-review/SKILL.md)
 
 Multi-agent code review pipeline. 5 specialized agents (quality, implementation, testing, simplification, documentation) review changes in parallel, verify findings, fix confirmed issues, then iterate with codex cross-review.
 
@@ -38,7 +38,7 @@ Multi-agent code review pipeline. 5 specialized agents (quality, implementation,
 /ralph-review develop   # diff against develop
 ```
 
-### [`md-to-pdf`](skills/md-to-pdf/SKILL.md)
+### [`md-to-pdf`](plugin/skills/md-to-pdf/SKILL.md)
 
 Convert Markdown files to clean A4 PDFs with Mermaid diagram support via pre-render and SVG inlining.
 
@@ -46,7 +46,7 @@ Convert Markdown files to clean A4 PDFs with Mermaid diagram support via pre-ren
 /md-to-pdf docs/architecture.md
 ```
 
-### [`docx`](skills/docx/SKILL.md)
+### [`docx`](plugin/skills/docx/SKILL.md)
 
 Read, edit, and export Microsoft Word documents. Supports text replacement, table cell editing, and PDF export.
 
@@ -55,7 +55,7 @@ Read, edit, and export Microsoft Word documents. Supports text replacement, tabl
 /docx edit contract.docx '{"old text": "new text"}'
 ```
 
-### [`skill-vetting`](skills/skill-vetting/SKILL.md)
+### [`skill-vetting`](plugin/skills/skill-vetting/SKILL.md)
 
 Security vetting for third-party skills. Downloads to /tmp, runs automated scanner, manual code review, utility assessment.
 
@@ -63,7 +63,7 @@ Security vetting for third-party skills. Downloads to /tmp, runs automated scann
 /skill-vetting https://github.com/someone/some-skill
 ```
 
-### [`skill-writer`](skills/skill-writer/SKILL.md)
+### [`skill-writer`](plugin/skills/skill-writer/SKILL.md)
 
 Create and improve Claude Code skills following official best practices and Agent Skills spec.
 
