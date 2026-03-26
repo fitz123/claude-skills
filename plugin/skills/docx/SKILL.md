@@ -1,5 +1,5 @@
 ---
-name: editing-docx
+name: docx
 description: Reads, edits, and exports Microsoft Word .docx files. Use when opening, filling in, modifying Word documents, templates, forms, or converting to PDF.
 allowed-tools:
   - Bash(uv:*)
