@@ -22,6 +22,13 @@ From [umputun/cc-thingz](https://github.com/umputun/cc-thingz) — `thinking-too
 /plugin install thinking-tools --scope user
 ```
 
+From [backnotprop/plannotator](https://github.com/backnotprop/plannotator) — visual plan review and annotation:
+
+```bash
+/plugin marketplace add backnotprop/plannotator
+/plugin install plannotator@plannotator --scope user
+```
+
 From [umputun/ralphex](https://github.com/umputun/ralphex):
 
 ```bash
