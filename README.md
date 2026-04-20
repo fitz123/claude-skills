@@ -55,6 +55,15 @@ Read, edit, and export Microsoft Word documents. Supports text replacement, tabl
 /docx edit contract.docx '{"old text": "new text"}'
 ```
 
+### [`notion-annotate`](plugin/skills/notion-annotate/SKILL.md)
+
+Remote-friendly alternative to plannotator. Pushes a markdown file to Notion so the user can read and comment on it from any device, then pulls comments back as git-review style feedback.
+
+```
+/notion-annotate push docs/plan.md
+/notion-annotate pull docs/plan.md
+```
+
 ### [`skill-vetting`](plugin/skills/skill-vetting/SKILL.md)
 
 Security vetting for third-party skills. Downloads to /tmp, runs automated scanner, manual code review, utility assessment.
