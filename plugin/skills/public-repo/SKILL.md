@@ -49,6 +49,7 @@ The defenses, ordered by where they fail:
 | #4 CI workflow `author-identity.yml` (this skill) | PR commits whose author *or committer* email isn't `@users.noreply.github.com` — blocks before merge |
 | #5 GitHub built-in secret scanning + push protection | Secrets in diff content (AWS keys, tokens, etc.) — blocks pushes |
 | #6 Gitleaks workflow `pii-scan.yml` | Same as #5 but extensible via custom rules + runs on PR |
+| #7 Copilot code review ruleset | Automatic AI review on every PR — catches code quality / security issues that fixed-rule scanners miss |
 
 Each layer alone is incomplete. The CI check is what catches a contributor on a fresh machine whose git config defaults to a real email. The secret scanners (#5/#6) cover diff *content*, complementing the author-metadata check.
 
@@ -220,7 +221,55 @@ Deploy via PR (same flow as step 5): branch → PR → squash-merge with `--admi
 
 If the user doesn't have a shared gitleaks reusable workflow, **skip this layer** — layer #5 (built-in secret scanning) covers the same ground for the standard secret patterns. Layer #6 only adds value if the user has custom gitleaks rules.
 
-### 8. (Optional) Add branch protection requiring the new check
+### 8. Apply layer #7: Copilot code review ruleset
+
+Adds automatic Copilot review on every PR to the default branch. Useful catch-all for issues that fixed-rule scanners (gitleaks, secret-scanning, author-identity) won't see — code quality, logic bugs, security smells, missing tests, etc.
+
+First check if a Copilot ruleset already exists (idempotent setup):
+
+```bash
+gh api /repos/<owner>/<repo>/rulesets --jq '.[] | select(.rules // [] | map(select(.type == "copilot_code_review")) | length > 0) | "\(.id) \(.name)"'
+```
+
+If empty, create one:
+
+```bash
+cat > /tmp/copilot-ruleset.json <<'JSON'
+{
+  "name": "Copilot review for default branch",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "copilot_code_review",
+      "parameters": {
+        "review_draft_pull_requests": false,
+        "review_on_push": true
+      }
+    }
+  ]
+}
+JSON
+gh api -X POST /repos/<owner>/<repo>/rulesets --input /tmp/copilot-ruleset.json \
+  --jq '"created ruleset id=\(.id) name=\"\(.name)\""'
+rm -f /tmp/copilot-ruleset.json
+```
+
+Parameters:
+
+- `review_draft_pull_requests: false` — don't review draft PRs (saves on review noise)
+- `review_on_push: true` — re-review when new commits are pushed
+- `~DEFAULT_BRANCH` — applies to whatever the default branch is (`main`/`master`)
+
+**Note**: Copilot review requires GitHub Copilot for the org/account. If unavailable, this step will fail with a clear error from the API; safe to skip.
+
+### 9. (Optional) Add branch protection requiring the new check on the default branch
 
 If the user wants the new CI check to be a required status check on `main`:
 
@@ -248,7 +297,7 @@ If the repo already has branch protection or rulesets configured, **read the cur
 gh api /repos/<owner>/<repo>/branches/<DEFAULT_BRANCH>/protection > /tmp/protection-backup.json
 ```
 
-### 9. Verify final state
+### 10. Verify final state
 
 Run all checks and report:
 
@@ -271,6 +320,10 @@ gh api /repos/<owner>/<repo> --jq '.security_and_analysis | "secret_scanning=\(.
 echo "=== Layer 6 (optional): gitleaks workflow ==="
 gh api /repos/<owner>/<repo>/contents/.github/workflows/pii-scan.yml --jq '"\(.name) sha=\(.sha[0:7])"' 2>/dev/null \
   || echo "  not deployed (acceptable if user has no shared gitleaks reusable workflow)"
+
+echo "=== Layer 7: Copilot code review ruleset ==="
+gh api /repos/<owner>/<repo>/rulesets --jq '.[] | select(.rules // [] | map(select(.type == "copilot_code_review")) | length > 0) | "id=\(.id) name=\"\(.name)\" enforcement=\(.enforcement)"' \
+  || echo "  not configured"
 
 echo "=== Display name (manual fix only) ==="
 gh api /user --jq '"name=\(.name) — change at https://github.com/settings/profile if it contains PII"'
