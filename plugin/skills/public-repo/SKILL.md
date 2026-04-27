@@ -65,7 +65,7 @@ If user gave `owner/repo` as the argument, use that. Otherwise:
 
 Validate access:
 ```bash
-gh api /repos/<owner>/<repo> --jq '"\(.full_name) default=\(.default_branch) admin=\(.permissions.admin) viewer=\(.viewer_can_administer)"'
+gh api /repos/<owner>/<repo> --jq '"\(.full_name) default=\(.default_branch) admin=\((.permissions.admin) // false)"'
 ```
 If `admin=false`, stop and tell the user — the skill needs admin to change merge settings.
 
@@ -273,13 +273,23 @@ Parameters:
 
 If the user wants the new CI check to be a required status check on `main`:
 
+**Get the exact check context name first** — required-status-check `contexts` must match GitHub's check-run name, which is typically `"<workflow-name> / <job-id>"` (e.g. `"Author Identity Check / author-check"`), NOT just the job id. Run a recent PR's checks to see the exact name:
+
 ```bash
+gh api /repos/<owner>/<repo>/commits/<DEFAULT_BRANCH>/check-runs --jq '.check_runs[].name' | sort -u
+```
+
+Pick the name corresponding to this skill's workflow. Then:
+
+```bash
+CHECK_NAME="Author Identity Check / author-check"   # adjust if your workflow renamed it
+
 gh api -X PUT /repos/<owner>/<repo>/branches/<DEFAULT_BRANCH>/protection \
-  --input - <<'JSON'
+  --input - <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["author-check"]
+    "contexts": ["${CHECK_NAME}"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": null,
@@ -305,8 +315,11 @@ Run all checks and report:
 echo "=== Layer 1: local identity ==="
 git config user.email   # must end with @users.noreply.github.com
 
-echo "=== Layer 2: GitHub email privacy ==="
-gh api /user --jq '.email // "(private)"'   # should be null/empty or noreply
+echo "=== Layer 2: GitHub email privacy (HINT ONLY — not authoritative) ==="
+gh api /user --jq '.email // "(no public profile email — likely-but-not-certainly private commits)"'
+# .email is the public profile email field, not the commit-email-privacy
+# toggle. Treat the output as a hint; the only authoritative check is the
+# user confirming the toggle in https://github.com/settings/emails.
 
 echo "=== Layer 3: squash-only merges ==="
 gh api /repos/<owner>/<repo> --jq '{allow_merge_commit, allow_rebase_merge, allow_squash_merge}'

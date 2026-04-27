@@ -1,8 +1,6 @@
 name: Author Identity Check
 
-on:
-  pull_request:
-    branches: [main, master]
+on: pull_request
 
 jobs:
   author-check:
@@ -18,12 +16,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          set -eu
+          set -euo pipefail
           # Check both author (%ae) and committer (%ce) emails. Either can leak
-          # PII via amend/rebase/cherry-pick chains.
+          # PII via amend/rebase/cherry-pick chains. With pipefail, awk failures
+          # propagate; we treat empty output (no bad commits) as success.
           bad=$(git log --pretty='%h author=%ae committer=%ce' "${BASE_SHA}..${HEAD_SHA}" \
-            | awk '$2 !~ /users\.noreply\.github\.com$/ || $3 !~ /users\.noreply\.github\.com$/' \
-            || true)
+            | awk '$2 !~ /users\.noreply\.github\.com$/ || $3 !~ /users\.noreply\.github\.com$/')
           if [ -n "$bad" ]; then
             echo "::error::PR contains commits whose author or committer email is not @users.noreply.github.com:"
             echo "$bad"
