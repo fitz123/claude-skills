@@ -89,6 +89,7 @@ These plugins extend the workflow with additional capabilities:
 | [backnotprop/plannotator](https://github.com/backnotprop/plannotator) | Visual plan review and annotation UI in browser |
 | [umputun/ralphex](https://github.com/umputun/ralphex) | Autonomous plan execution + `ralphex-plan` skill for plan creation |
 | [umputun/cc-thingz](https://github.com/umputun/cc-thingz) | `ask-codex` (GPT-5 second opinion), `dialectic` (opposing agents), `root-cause-investigator` (5-Why) |
+| [umputun/revdiff](https://github.com/umputun/revdiff) | TUI for reviewing diffs, files, and documents with inline annotations — outputs structured results for AI agents |
 
 ```bash
 /plugin marketplace add backnotprop/plannotator
@@ -99,6 +100,10 @@ These plugins extend the workflow with additional capabilities:
 
 /plugin marketplace add umputun/cc-thingz
 /plugin install thinking-tools --scope user
+
+/plugin marketplace add umputun/revdiff
+/plugin install revdiff@umputun-revdiff --scope user
+brew install umputun/apps/revdiff
 ```
 
 ## Installation
