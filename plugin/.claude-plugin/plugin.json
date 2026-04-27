@@ -1,0 +1,8 @@
+{
+  "name": "claude-skills",
+  "version": "2.1.0",
+  "description": "Shared Claude Code skills: brainstorming, code review, docs, remote review via Notion",
+  "author": {
+    "name": "fitz123"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "claude-skills",
+  "owner": {
+    "name": "fitz123"
+  },
+  "plugins": [
+    {
+      "name": "claude-skills",
+      "description": "Shared Claude Code skills: brainstorming, code review, docs, remote review via Notion",
+      "source": "./plugin"
+    }
+  ]
+}
