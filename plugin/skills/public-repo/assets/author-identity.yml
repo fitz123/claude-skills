@@ -1,0 +1,38 @@
+name: Author Identity Check
+
+on: pull_request
+
+jobs:
+  author-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify commit author + committer emails are noreply
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # Check both author (%ae) and committer (%ce) emails. Either can leak
+          # PII via amend/rebase/cherry-pick chains. With pipefail, awk failures
+          # propagate; we treat empty output (no bad commits) as success.
+          bad=$(git log --pretty='%h author=%ae committer=%ce' "${BASE_SHA}..${HEAD_SHA}" \
+            | awk '$2 !~ /users\.noreply\.github\.com$/ || $3 !~ /users\.noreply\.github\.com$/')
+          if [ -n "$bad" ]; then
+            echo "::error::PR contains commits whose author or committer email is not @users.noreply.github.com:"
+            echo "$bad"
+            echo
+            echo "Fix locally (run from your PR branch):"
+            echo "  git config user.email <USER>@users.noreply.github.com"
+            echo "  git fetch origin"
+            echo "  git rebase -i origin/${BASE_REF}  # for each commit pick 'edit', then:"
+            echo "  git commit --amend --reset-author --no-edit"
+            echo "  git rebase --continue"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "All commit author and committer emails OK"
