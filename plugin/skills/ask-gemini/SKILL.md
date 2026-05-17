@@ -111,6 +111,10 @@ For **strict-JSON** responses (when invoked by `multi-review` or any caller requ
 
 `ask-gemini` participates in `multi-review`'s parallel-reviewer flow as the third reviewer alongside Codex (via `thinking-tools:ask-codex`) and a fresh Opus subagent (via `Task`). The caller passes the canonical adversarial-review prompt from `multi-review/SKILL.md`; this skill's job is to invoke the Gemini CLI and surface the raw response.
 
+**Plan-mode subagent constraint (important):** `--approval-mode plan` allows only a fixed set of tools — read-only filesystem access (`read_file`, `glob`, `grep_search`) plus two default-allowed subagents (`codebase_investigator`, `cli_help`). Any OTHER subagent the model tries to route through (`invoke_agent <name>`) is denied by the policy engine and the run aborts. The caller's prompt **must** constrain Gemini's tool routing accordingly: e.g. "use ONLY the `codebase_investigator` subagent or direct read tools; do NOT invoke other subagents." The `multi-review` prompt template includes this constraint by design — if you're calling `ask-gemini` from elsewhere with the adversarial JSON contract, include the same constraint.
+
+**Inline the diff (don't reference a shell command):** Gemini in plan mode cannot execute shell commands, so a prompt that says "Review `git diff base...HEAD`" fails — Gemini has no way to see the diff. The caller (e.g. `multi-review`'s orchestrator) must resolve the diff via shell first and inline it inside the prompt body (typically inside a `<diff>...</diff>` block). Codex and Opus tolerate either form; Gemini requires the inline form.
+
 The contract requires **strict JSON** with this shape:
 
 ```json
@@ -138,13 +142,13 @@ Note: at the time of writing, `multi-review` does not yet exist in this plugin �
 ## Gemini-specific gotchas
 
 - **Large-prompt handling**: prefer stdin (`echo "<prompt>" | gemini --approval-mode plan`) over `-p "<prompt>"` for prompts approaching shell `ARG_MAX` (~256KB on macOS). Embedded diffs and multi-file context blow past this threshold quickly.
-- **`--approval-mode plan` semantics**: plan mode is read-only filesystem (no write, no execute). The model can still read files via its built-in tools. Verify against `gemini --help`'s choices list — the values are `default`, `auto_edit`, `yolo`, `plan`. Anything other than `plan` for review work risks the model trying to apply changes.
+- **`--approval-mode plan` semantics**: plan mode is read-only filesystem (no write, no execute) AND restricts subagent invocations to a fixed allowlist (`codebase_investigator`, `cli_help`). The model can still read files via built-in tools. The full mode set is `default | auto_edit | yolo | plan`. Plan is the documented headless mode for code review; in non-interactive runs, `default` also works fine because Gemini's policy engine treats `ask_user` as `deny` when there's no TTY. `yolo` works too but lifts all safety nets. **For this skill, `plan` is the default** — but be aware of the subagent allowlist constraint above.
 - **Authentication**: Gemini CLI checks `GEMINI_API_KEY` env var **or** `gcloud auth application-default login` (whichever the homebrew build wires up first). Document both paths and let the user pick — neither is privileged in this skill.
 - **Default model selection**: invoking `gemini` without `-m` selects a default model that may shift over time. For JSON-strict outputs in `multi-review`, pin a specific pro-tier model via `-m <name>` if reliability matters. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses, so pinning is recommended-not-required.
 
 ## Important Rules
 
-- **Read-only always** — Gemini analyzes, we implement. Never invoke Gemini outside `--approval-mode plan` for review work.
+- **Read-only always** — Gemini analyzes, we implement. Default invocation uses `--approval-mode plan`; switching modes requires explicit prompt-level constraints and a justification (e.g. needing to invoke a subagent outside plan-mode's allowlist).
 - **Don't duplicate files** — Gemini has filesystem access in plan mode. Provide paths, not content.
 - **Focused prompts** — specific questions get better answers than broad "review everything".
 - **One question at a time** — if multiple concerns, run separate Gemini queries.
