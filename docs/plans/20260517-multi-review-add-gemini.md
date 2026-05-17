@@ -190,13 +190,13 @@ The rename in Task 2 makes `/dual-review` resolve to nothing (slash-command look
 - Modify: `~/claude-skills/plugin/.claude-plugin/plugin.json`
 - Modify: `~/claude-skills/README.md`
 
-- [ ] Edit `plugin/.claude-plugin/plugin.json`: `"version": "2.2.0"` → `"version": "2.3.0"`. Optionally extend the `description` to mention "three-reviewer adversarial code review" (keep concise).
-- [ ] Edit `README.md`:
+- [x] Edit `plugin/.claude-plugin/plugin.json`: `"version": "2.2.0"` → `"version": "2.3.0"`. Optionally extend the `description` to mention "three-reviewer adversarial code review" (keep concise).
+- [x] Edit `README.md`:
   - Replace the existing `### \`dual-review\`` section with `### \`multi-review\``. New section: 2–3 line description (three reviewers: Codex + Opus + Gemini), one fenced invocation (`/multi-review`), prerequisites callout listing `thinking-tools` (provides `ask-codex` Skill), `plannotator` (`plannotator annotate` CLI invoked via Bash; slash command is user-only), and Gemini CLI on PATH (with auth via `GEMINI_API_KEY` or `gcloud auth`).
   - Add `### \`ask-gemini\`` section after `multi-review` (or in a logical spot — match the existing ordering style; consult the README structure). 2 lines + one fenced invocation example.
-- [ ] Verify: `rg -n 'dual-review' ~/claude-skills/README.md` returns either zero hits or only intentional legacy-mention text. `rg -n 'multi-review\|ask-gemini' ~/claude-skills/README.md` returns the expected new sections.
-- [ ] Verify: `grep '"version"' ~/claude-skills/plugin/.claude-plugin/plugin.json` shows `2.3.0`.
-- [ ] Commit: `chore: bump plugin version + document multi-review and ask-gemini`. Stage: `plugin/.claude-plugin/plugin.json`, `README.md`, plan-file Task 4 checkboxes.
+- [x] Verify: `rg -n 'dual-review' ~/claude-skills/README.md` returns either zero hits or only intentional legacy-mention text. `rg -n 'multi-review\|ask-gemini' ~/claude-skills/README.md` returns the expected new sections.
+- [x] Verify: `grep '"version"' ~/claude-skills/plugin/.claude-plugin/plugin.json` shows `2.3.0`.
+- [x] Commit: `chore: bump plugin version + document multi-review and ask-gemini`. Stage: `plugin/.claude-plugin/plugin.json`, `README.md`, plan-file Task 4 checkboxes.
 
 ### Task 6: Open PR and run Copilot review loop
 
