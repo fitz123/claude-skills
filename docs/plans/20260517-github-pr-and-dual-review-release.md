@@ -122,12 +122,12 @@ Key decision: ship as one PR. The repo is **squash-merge-only** (verified: `merg
 - Modify: `~/claude-skills/plugin/.claude-plugin/plugin.json` (version bump)
 - Modify: `~/claude-skills/README.md`
 
-- [ ] edit `plugin/.claude-plugin/plugin.json`: bump `version` from `2.1.0` to `2.2.0`. Optionally extend the `description` field to mention GitHub PR loops + adversarial review.
-- [ ] commit (separately): `chore: bump plugin version to 2.2.0`
-- [ ] add a `### \`github-pr\`` section after `ralph-review`, ~3 lines + one fenced example invocation
-- [ ] add a `### \`dual-review\`` section after `github-pr`, ~3 lines + one fenced example invocation. Callout listing prerequisites: **`thinking-tools` plugin** (provides the `ask-codex` Skill — model-invokable) + **`plannotator` binary on `PATH`** (the skill invokes `plannotator annotate` via Bash; installing the `plannotator` plugin via `/plugin install plannotator@plannotator` is the recommended way to get the binary — the slash command itself has `disable-model-invocation: true` and is for user-only interactive use, but the underlying CLI is what `dual-review` actually shells out to).
-- [ ] update the "Workflow: From Idea to Implementation" diagram only if a natural fit; otherwise skip (these two skills are review-cycle tools, not part of the planning flow)
-- [ ] commit: `docs(readme): document github-pr and dual-review skills`
+- [x] edit `plugin/.claude-plugin/plugin.json`: bump `version` from `2.1.0` to `2.2.0`. Optionally extend the `description` field to mention GitHub PR loops + adversarial review.
+- [x] commit (separately): `chore: bump plugin version to 2.2.0`
+- [x] add a `### \`github-pr\`` section after `ralph-review`, ~3 lines + one fenced example invocation
+- [x] add a `### \`dual-review\`` section after `github-pr`, ~3 lines + one fenced example invocation. Callout listing prerequisites: **`thinking-tools` plugin** (provides the `ask-codex` Skill — model-invokable) + **`plannotator` binary on `PATH`** (the skill invokes `plannotator annotate` via Bash; installing the `plannotator` plugin via `/plugin install plannotator@plannotator` is the recommended way to get the binary — the slash command itself has `disable-model-invocation: true` and is for user-only interactive use, but the underlying CLI is what `dual-review` actually shells out to).
+- [x] update the "Workflow: From Idea to Implementation" diagram only if a natural fit; otherwise skip (these two skills are review-cycle tools, not part of the planning flow)
+- [x] commit: `docs(readme): document github-pr and dual-review skills`
 
 ### Task 4: Open PR and run Copilot review loop
 
