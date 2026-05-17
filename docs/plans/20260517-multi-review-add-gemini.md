@@ -178,11 +178,11 @@ Goal: change reviewer count from 2 → 3 AND fully de-`dual-review` the body. (T
 
 The rename in Task 2 makes `/dual-review` resolve to nothing (slash-command lookup matches `name:` field, NOT activation phrases in `description:` — verified empirically that description-trigger fuzzy-matching is for prose suggestions, not exact-slug routing). To preserve muscle memory for one release, ship a stub skill at the old path that redirects.
 
-- [ ] `mkdir -p ~/claude-skills/plugin/skills/dual-review/`
-- [ ] Write a minimal `SKILL.md` with frontmatter `name: dual-review`, `description: Legacy alias — dual-review was renamed to multi-review with Gemini added as a third reviewer. Triggers preserved for muscle memory: dual review, /dual-review, co-review, cross-review, opus+codex review. Will be removed in v3.0.0.`, no `allowed-tools` (the stub doesn't run anything itself).
-- [ ] Body (under 20 lines): one paragraph stating "This skill has been renamed to `multi-review` and now runs three reviewers (Codex + Opus + Gemini) instead of two. Invoke `/multi-review` (or `claude-skills:multi-review` via the Skill tool) to use the new flow." Plus a one-line note: "This stub is scheduled for removal in v3.0.0 once `/dual-review` muscle memory has faded; update aliases/docs to use `/multi-review` directly."
-- [ ] Verify: `rg -n 'multi-review' ~/claude-skills/plugin/skills/dual-review/SKILL.md` returns at least 2 matches (the body and the description/migration note).
-- [ ] Commit: `feat(dual-review): add legacy stub redirecting to multi-review`. Stage: `plugin/skills/dual-review/SKILL.md` + plan-file Task 4 checkboxes.
+- [x] `mkdir -p ~/claude-skills/plugin/skills/dual-review/`
+- [x] Write a minimal `SKILL.md` with frontmatter `name: dual-review`, `description: Legacy alias — dual-review was renamed to multi-review with Gemini added as a third reviewer. Triggers preserved for muscle memory: dual review, /dual-review, co-review, cross-review, opus+codex review. Will be removed in v3.0.0.`, no `allowed-tools` (the stub doesn't run anything itself).
+- [x] Body (under 20 lines): one paragraph stating "This skill has been renamed to `multi-review` and now runs three reviewers (Codex + Opus + Gemini) instead of two. Invoke `/multi-review` (or `claude-skills:multi-review` via the Skill tool) to use the new flow." Plus a one-line note: "This stub is scheduled for removal in v3.0.0 once `/dual-review` muscle memory has faded; update aliases/docs to use `/multi-review` directly."
+- [x] Verify: `rg -n 'multi-review' ~/claude-skills/plugin/skills/dual-review/SKILL.md` returns at least 2 matches (the body and the description/migration note).
+- [x] Commit: `feat(dual-review): add legacy stub redirecting to multi-review`. Stage: `plugin/skills/dual-review/SKILL.md` + plan-file Task 4 checkboxes.
 
 ### Task 5: Bump plugin version + update README
 
