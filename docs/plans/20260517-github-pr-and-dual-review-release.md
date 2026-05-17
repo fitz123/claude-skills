@@ -133,12 +133,14 @@ Key decision: ship as one PR. The repo is **squash-merge-only** (verified: `merg
 
 **Files:** (no file changes — purely PR ops)
 
-- [ ] `git push -u origin feat/github-pr-and-dual-review`
-- [ ] `gh pr create --title "feat: add github-pr and dual-review skills" --body "..."` with summary referencing this plan
+- [x] `git push -u origin feat/github-pr-and-dual-review` (actual branch: `github-pr-and-dual-review-release` per create-branch.sh)
+- [x] `gh pr create --title "feat: add github-pr and dual-review skills" --body "..."` with summary referencing this plan → https://github.com/fitz123/claude-skills/pull/9
 - [ ] poll Copilot review using the newly-added skill itself (dogfooding) — invoke via the local working-tree path while iterating: `bash ~/claude-skills/plugin/skills/github-pr/scripts/poll-pr-review.sh <pr#>`. Chicken-and-egg note: the SKILL.md `${CLAUDE_PLUGIN_ROOT}/...` paths only resolve to the new cache version AFTER merge+restart, so during Task 4 invoke scripts by working-tree path, not by SKILL.md instruction.
 - [ ] address any findings; for each round: push, run `resolve-all-threads.sh`, `request-copilot-rereview.sh`, `poll-pr-review.sh` (all from the working tree, same as above)
 - [ ] confirm both CI jobs (author-check, gitleaks) pass
 - [ ] merge PR once clean — **squash merge only** (verified: rebase + merge-commit disallowed in repo settings). Do NOT pick "Rebase and merge" or "Create a merge commit" in the GitHub UI; only "Squash and merge" is available anyway.
+
+⚠️ Remaining Task 4 checkboxes are user-supervised — see PR https://github.com/fitz123/claude-skills/pull/9 for Copilot iteration + merge.
 
 ### Task 5: Verify acceptance criteria (shadow-safe ordering)
 
