@@ -1,5 +1,5 @@
 ---
-name: dual-review
+name: multi-review
 description: Run two independent reviewers (Codex via thinking-tools:ask-codex + a fresh Opus subagent) in parallel against the current branch, merge findings, then write all questions to a markdown file for single-pass plannotator review before applying anything. Use when user says "dual review", "/dual-review", "co-review", "cross-review", "opus+codex review", or asks for a two-reviewer code review.
 argument-hint: "[base-branch]"
 allowed-tools:
@@ -25,7 +25,7 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# Dual Review
+# Multi Review
 
 Codex (via `thinking-tools:ask-codex`) + a fresh Opus subagent review the branch in parallel. Findings merged, written to one markdown file, opened with `plannotator-annotate` for single-pass review, applied in one commit. Save pre-review HEAD as the rollback SHA.
 

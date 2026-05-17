@@ -144,10 +144,10 @@ Key design decisions (and why):
 - Move: `~/claude-skills/plugin/skills/dual-review/` → `~/claude-skills/plugin/skills/multi-review/`
 - Modify: `~/claude-skills/plugin/skills/multi-review/SKILL.md` — frontmatter `name:` and body title only
 
-- [ ] `cd ~/claude-skills && git mv plugin/skills/dual-review plugin/skills/multi-review`
-- [ ] Update `plugin/skills/multi-review/SKILL.md`: frontmatter `name: dual-review` → `name: multi-review`; body H1 `# Dual Review` → `# Multi Review`. **No other changes in this commit** — keep the rename diff tight and reviewable.
-- [ ] Verify: `rg -n 'dual-review\|dual review\|Dual Review' ~/claude-skills/plugin/skills/multi-review/SKILL.md` returns only intentional legacy-trigger mentions (none expected in this commit since description stays unchanged until Task 3). Empty is fine.
-- [ ] Commit: `refactor: rename dual-review → multi-review`. Stage: the `R100` rename + the two-line edit + plan-file Task 2 checkboxes.
+- [x] `cd ~/claude-skills && git mv plugin/skills/dual-review plugin/skills/multi-review`
+- [x] Update `plugin/skills/multi-review/SKILL.md`: frontmatter `name: dual-review` → `name: multi-review`; body H1 `# Dual Review` → `# Multi Review`. **No other changes in this commit** — keep the rename diff tight and reviewable.
+- [x] Verify: `rg -n 'dual-review\|dual review\|Dual Review' ~/claude-skills/plugin/skills/multi-review/SKILL.md` returns only intentional legacy-trigger mentions (none expected in this commit since description stays unchanged until Task 3). Empty is fine.
+- [x] Commit: `refactor: rename dual-review → multi-review`. Stage: the `R100` rename + the two-line edit + plan-file Task 2 checkboxes.
 
 ### Task 3: Add Gemini as third reviewer in `multi-review/SKILL.md`
 
