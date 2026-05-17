@@ -202,13 +202,15 @@ The rename in Task 2 makes `/dual-review` resolve to nothing (slash-command look
 
 **Files:** (no file changes — purely PR ops)
 
-- [ ] `cd ~/claude-skills && git push -u origin feat/multi-review-add-gemini`
-- [ ] `gh pr create --title "feat: rename dual-review → multi-review, add Gemini as third reviewer" --body "<summary>"` — body should reference this plan and list the five commits.
+- [x] `cd ~/claude-skills && git push -u origin feat/multi-review-add-gemini` — actual branch name shipped as `multi-review-add-gemini` (no `feat/` prefix); pushed cleanly.
+- [x] `gh pr create --title "feat: rename dual-review → multi-review, add Gemini as third reviewer" --body "<summary>"` — body should reference this plan and list the five commits. **PR: https://github.com/fitz123/claude-skills/pull/10**
 - [ ] **Pre-merge Skill-resolution smoke test** (de-risks the silent-degrade failure mode): install the plugin locally from the working tree before merging — `cd ~/claude-skills && /plugin marketplace add /Users/ninja/claude-skills && /plugin install claude-skills@<local>` (or whatever the supported local-install incantation is; check `/plugin --help`). In a fresh CC session targeting the local install, invoke a no-op test prompt against `claude-skills:ask-gemini` via the Skill tool. If that fails, try bare `ask-gemini`. If neither works from inside `multi-review` (same plugin), pin to direct `Bash(gemini:*)` invocation in `multi-review/SKILL.md` instead of routing through the Skill tool. Document which form was verified in the PR body so future-maintainers don't have to re-derive.
 - [ ] Dogfood the now-shipping `github-pr` scripts to drive the Copilot loop: `bash ~/claude-skills/plugin/skills/github-pr/scripts/poll-pr-review.sh <pr#>` (invoke via working-tree path since `${CLAUDE_PLUGIN_ROOT}` resolves to the installed 2.2.0 cache, not the 2.3.0 about to ship).
 - [ ] Address Copilot findings (push fix → `resolve-all-threads.sh` → `request-copilot-rereview.sh` → `poll-pr-review.sh`).
 - [ ] Confirm `author-identity` + `gitleaks` CI both pass.
 - [ ] Merge — **squash only** (verified: rebase + merge-commit disallowed on this repo).
+
+⚠️ Remaining Task 6 checkboxes are user-supervised — see PR https://github.com/fitz123/claude-skills/pull/10 for Copilot iteration + smoke test + merge.
 
 ### Task 7: Verify acceptance
 
