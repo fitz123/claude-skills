@@ -38,6 +38,24 @@ Multi-agent code review pipeline. 5 specialized agents (quality, implementation,
 /ralph-review develop   # diff against develop
 ```
 
+### [`github-pr`](plugin/skills/github-pr/SKILL.md)
+
+Copilot-aware GitHub PR review loop. Polls for Copilot reviews (with required re-request between rounds), resolves resolved threads, and iterates until the PR is clean. Wraps `gh` CLI + GraphQL.
+
+```
+/github-pr 42
+```
+
+### [`dual-review`](plugin/skills/dual-review/SKILL.md)
+
+Two-reviewer adversarial code review against a base branch. Runs Codex (via `thinking-tools:ask-codex`) and a fresh Opus subagent in parallel, merges findings, and presents them as a single plannotator pass before applying any fix.
+
+```
+/dual-review
+```
+
+Prerequisites: install the `thinking-tools` plugin (provides the `ask-codex` Skill) and the `plannotator` plugin (provides the `plannotator` CLI on PATH; the skill invokes `plannotator annotate` via Bash — the `/plannotator-annotate` slash command has `disable-model-invocation: true` and is user-only by design).
+
 ### [`md-to-pdf`](plugin/skills/md-to-pdf/SKILL.md)
 
 Convert Markdown files to clean A4 PDFs with Mermaid diagram support via pre-render and SVG inlining.
