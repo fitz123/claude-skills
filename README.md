@@ -46,15 +46,26 @@ Copilot-aware GitHub PR review loop. Polls for Copilot reviews (with required re
 /github-pr 42
 ```
 
-### [`dual-review`](plugin/skills/dual-review/SKILL.md)
+### [`multi-review`](plugin/skills/multi-review/SKILL.md)
 
-Two-reviewer adversarial code review against a base branch. Runs Codex (via `thinking-tools:ask-codex`) and a fresh Opus subagent in parallel, merges findings, and presents them as a single plannotator pass before applying any fix.
+Three-reviewer adversarial code review against a base branch. Runs Codex (via `thinking-tools:ask-codex`), a fresh Opus subagent (via `Task`), and Gemini (via `claude-skills:ask-gemini`) in parallel, merges findings, and presents them as a single plannotator pass before applying any fix in one commit.
 
 ```
-/dual-review
+/multi-review
 ```
 
-Prerequisites: install the `thinking-tools` plugin (provides the `ask-codex` Skill) and the `plannotator` plugin (provides the `plannotator` CLI on PATH; the skill invokes `plannotator annotate` via Bash — the `/plannotator-annotate` slash command has `disable-model-invocation: true` and is user-only by design).
+Prerequisites:
+- `thinking-tools` plugin installed (provides the model-invocable `ask-codex` Skill).
+- `plannotator` binary on PATH — the skill invokes `plannotator annotate` via Bash (the bundled `/plannotator-annotate` slash command has `disable-model-invocation: true` and is user-only by design).
+- `gemini` CLI on PATH (auth via `GEMINI_API_KEY` env or `gcloud auth application-default login`).
+
+### [`ask-gemini`](plugin/skills/ask-gemini/SKILL.md)
+
+Thin wrapper around the local `gemini` CLI for second-opinion runs on diffs or quick adversarial reviews. Used as one of the three reviewers by `multi-review`, but also invocable standalone.
+
+```
+ask gemini about this diff
+```
 
 ### [`md-to-pdf`](plugin/skills/md-to-pdf/SKILL.md)
 
