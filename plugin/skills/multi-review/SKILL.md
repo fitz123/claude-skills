@@ -42,6 +42,8 @@ Dirty tree; in-progress git op; detached HEAD; branch is `main`/`master`/`develo
 
 ## Launch reviewers in parallel
 
+Before sending the prompt, run `git diff {base}...HEAD` in the orchestrator and inline its output inside the `<diff>...</diff>` block of the prompt template below. **Don't rely on each reviewer running `git diff` themselves** — Gemini in `--approval-mode plan` cannot execute shell commands, so a shell-reference-only prompt fails for Gemini even though Codex/Opus would handle it.
+
 Single message:
 1. Codex — invoke `thinking-tools:ask-codex` via the `Skill` tool with the prompt below; capture findings as data.
 2. Opus — `Task` tool with `subagent_type: "general-purpose"` using the same prompt.
@@ -53,13 +55,16 @@ Retry once on non-JSON. If a reviewer dies twice, proceed with the survivors and
 
 ```
 <role>You are performing an adversarial code review. Break confidence in the change, do not validate it.</role>
-<task>Review `git diff {base}...HEAD`. Read source files for context. Do not edit/write/commit.</task>
+<task>Review the diff provided below. For additional context-gathering, use ONLY the `codebase_investigator` subagent (Gemini's plan-mode default allowlist) or direct read tools (`read_file`, `glob`, `grep_search`). Do NOT invoke other subagents. Do not edit/write/commit.</task>
 <operating_stance>Default to skepticism. Happy-path-only is a real weakness.</operating_stance>
 <attack_surfaces>
 auth, tenant isolation, trust boundaries; data loss / corruption / irreversible state; rollback safety, retries, idempotency; races, ordering, re-entrancy; empty/nil/timeout/degraded-dependency; schema drift, migration hazards; observability gaps.
 </attack_surfaces>
 <finding_bar>Material findings only. Each must answer: what goes wrong, why this path is vulnerable, impact, concrete fix. One strong finding > several weak ones.</finding_bar>
 <grounding>Defensible from actual code. Don't invent. Honest confidence scores.</grounding>
+<diff>
+{inline the full output of `git diff {base}...HEAD` here — the orchestrator resolves this before sending the prompt}
+</diff>
 <output>
 Return JSON only, no fence:
 { "verdict": "approve"|"needs-attention", "summary": "...",
