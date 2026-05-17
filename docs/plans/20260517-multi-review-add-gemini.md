@@ -156,20 +156,20 @@ Key design decisions (and why):
 
 Goal: change reviewer count from 2 → 3 AND fully de-`dual-review` the body. (Task 2 only touched frontmatter `name:` + H1 title; Task 3 picks up everything else. Verify after editing with the regex below — expected output: exactly ONE line, the legacy `dual review` trigger in description.)
 
-- [ ] Update frontmatter `description:` to the wording in Technical Details (three reviewers; activation phrases include `multi review` / `/multi-review` / `triple review` / `dual review` (legacy) / `co-review` / `cross-review`).
-- [ ] Update opening paragraph (currently: "Codex (via `thinking-tools:ask-codex`) + a fresh Opus subagent review the branch in parallel."): rewrite to name three reviewers.
-- [ ] Update `## Prerequisites` section: add a third bullet for the Gemini CLI — note `gemini` must be on `PATH` (verified via `which gemini`); `GEMINI_API_KEY` env or `gcloud auth application-default login` for auth; `claude-skills:ask-gemini` Skill wraps the invocation. (Pin the exact Skill prefix — see Task 5 smoke test for which form actually resolves.)
-- [ ] Update `## Launch reviewers in parallel` numbered list from 2 → 3 items (Codex via `Skill`, Opus via `Task`, Gemini via the verified Skill form). Keep retry-once-on-non-JSON + survive-on-death semantics.
-- [ ] Update `## Merge and triage` "gap" report: `gap: none | Codex | Opus | Gemini | <multiple, comma-separated>`.
-- [ ] **De-`dual-review` the body string-by-string** — these are NOT in the rename commit (Task 2 kept them) and need explicit edits:
+- [x] Update frontmatter `description:` to the wording in Technical Details (three reviewers; activation phrases include `multi review` / `/multi-review` / `triple review` / `dual review` (legacy) / `co-review` / `cross-review`).
+- [x] Update opening paragraph (currently: "Codex (via `thinking-tools:ask-codex`) + a fresh Opus subagent review the branch in parallel."): rewrite to name three reviewers.
+- [x] Update `## Prerequisites` section: add a third bullet for the Gemini CLI — note `gemini` must be on `PATH` (verified via `which gemini`); `GEMINI_API_KEY` env or `gcloud auth application-default login` for auth; `claude-skills:ask-gemini` Skill wraps the invocation. (Pin the exact Skill prefix — see Task 5 smoke test for which form actually resolves.)
+- [x] Update `## Launch reviewers in parallel` numbered list from 2 → 3 items (Codex via `Skill`, Opus via `Task`, Gemini via the verified Skill form). Keep retry-once-on-non-JSON + survive-on-death semantics.
+- [x] Update `## Merge and triage` "gap" report: `gap: none | Codex | Opus | Gemini | <multiple, comma-separated>`.
+- [x] **De-`dual-review` the body string-by-string** — these are NOT in the rename commit (Task 2 kept them) and need explicit edits:
   - Line 84 (source): `/tmp/dual-review-questions-$RANDOM.md` → `/tmp/multi-review-questions-$RANDOM.md`.
   - Line 87 (source): `# dual-review findings — <branch> vs <base>` → `# multi-review findings — <branch> vs <base>`.
   - Line 113 (source): `Commit \`fix: address dual-review findings\`` → `Commit \`fix: address multi-review findings\``.
-- [ ] Update `## Write findings` template: `reviewers: Codex+Opus+Gemini` example (or any subset).
-- [ ] Update `## Final report` `reviewers:` line: enumerate explicitly — `Codex+Opus+Gemini | Codex+Opus | Codex+Gemini | Opus+Gemini | Codex only | Opus only | Gemini only | none`. (Don't use `(any two)` shorthand — implementers will write runtime-formed strings that pass through verbatim, and "(any two)" is not a valid string for those.)
-- [ ] No change to the adversarial review prompt itself — the JSON contract is reviewer-agnostic.
-- [ ] **Verify de-renaming complete**: `rg -n 'dual-review|dual review|Dual Review' ~/claude-skills/plugin/skills/multi-review/SKILL.md` must return **exactly one** line — the legacy `dual review` trigger in description (intentional, for muscle memory). Any other match means a stale string slipped past — fix before commit.
-- [ ] Commit: `feat(multi-review): add Gemini as third reviewer`. Stage: `plugin/skills/multi-review/SKILL.md` + plan-file Task 3 checkboxes.
+- [x] Update `## Write findings` template: `reviewers: Codex+Opus+Gemini` example (or any subset).
+- [x] Update `## Final report` `reviewers:` line: enumerate explicitly — `Codex+Opus+Gemini | Codex+Opus | Codex+Gemini | Opus+Gemini | Codex only | Opus only | Gemini only | none`. (Don't use `(any two)` shorthand — implementers will write runtime-formed strings that pass through verbatim, and "(any two)" is not a valid string for those.)
+- [x] No change to the adversarial review prompt itself — the JSON contract is reviewer-agnostic.
+- [x] **Verify de-renaming complete**: `rg -n 'dual-review|dual review|Dual Review' ~/claude-skills/plugin/skills/multi-review/SKILL.md` must return **exactly one** line — the legacy `dual review` trigger in description (intentional, for muscle memory). Any other match means a stale string slipped past — fix before commit.
+- [x] Commit: `feat(multi-review): add Gemini as third reviewer`. Stage: `plugin/skills/multi-review/SKILL.md` + plan-file Task 3 checkboxes.
 
 ### Task 4: Add legacy `dual-review` stub for backward compatibility
 
