@@ -34,7 +34,7 @@ Codex (via `thinking-tools:ask-codex`), a fresh Opus subagent (via the `Task` to
 This skill depends on two other marketplace plugins:
 - **`thinking-tools`** (provides the model-invocable `ask-codex` Skill — `/plugin install thinking-tools@<source>`).
 - **`plannotator`** (provides the `plannotator` CLI on `PATH`; the skill shells out to `plannotator annotate <findings-file>` via Bash. Note: the bundled `/plannotator-annotate` slash command has `disable-model-invocation: true` and is user-only by design; the model must invoke the bare CLI, not the slash command. `/plugin install plannotator@plannotator`.)
-- **`gemini` CLI on `PATH`** (typically `/opt/homebrew/bin/gemini` on macOS via `brew install gemini-cli` or similar). Auth via `GEMINI_API_KEY` env or `gcloud auth application-default login`. The skill invokes Gemini through the sibling `claude-skills:ask-gemini` Skill, which wraps `gemini -p "<prompt>" --approval-mode plan` for read-only review mode.
+- **`gemini` CLI on `PATH`** (typically `/opt/homebrew/bin/gemini` on macOS via `brew install gemini-cli` or similar). Auth via `GEMINI_API_KEY` env or `gcloud auth application-default login`. `multi-review` invokes the CLI directly via `Bash` (see Launch step below) — Gemini's default model is used (no `-m` pin) so the skill picks up CLI default-model upgrades automatically. The sibling `claude-skills:ask-gemini` Skill is for standalone interactive use; `multi-review` does NOT route through it (would serialize wall-clock work — see Parallelism contract below).
 
 ## Refuse if unsafe
 
@@ -42,14 +42,47 @@ Dirty tree; in-progress git op; detached HEAD; branch is `main`/`master`/`develo
 
 ## Launch reviewers in parallel
 
-Before sending the prompt, run `git diff {base}...HEAD` in the orchestrator and inline its output inside the `<diff>...</diff>` block of the prompt template below. **Don't rely on each reviewer running `git diff` themselves** — Gemini in `--approval-mode plan` cannot execute shell commands, so a shell-reference-only prompt fails for Gemini even though Codex/Opus would handle it.
+Before launching, run `git diff {base}...HEAD` in the orchestrator and inline its output inside the `<diff>...</diff>` block of the prompt template below. **Don't rely on each reviewer running `git diff` themselves** — Gemini in `--approval-mode plan` cannot execute shell commands, so a shell-reference-only prompt fails for Gemini even though Codex/Opus would handle it.
 
-Single message:
-1. Codex — invoke `thinking-tools:ask-codex` via the `Skill` tool with the prompt below; capture findings as data.
-2. Opus — `Task` tool with `subagent_type: "general-purpose"` using the same prompt.
-3. Gemini — invoke `claude-skills:ask-gemini` via the `Skill` tool with the same prompt.
+### Parallelism contract (load-bearing — read this)
 
-Retry once on non-JSON. If a reviewer dies twice, proceed with the survivors and note the gap.
+All three reviewer invocations **MUST** be issued as three tool calls in a **single assistant message**. The harness runs same-message tool calls concurrently, so wall-clock ≈ max(codex≈2-5min, opus≈1-3min, gemini≈30s-2min) instead of the serialized 4-10min sum. Issuing them across separate messages serializes — costs the operator real time.
+
+**Do NOT route through the `Skill` tool for `thinking-tools:ask-codex` or `claude-skills:ask-gemini` here.** The `Skill` tool *loads* the underlying skill's instructions into the conversation; it does NOT execute the CLI. Following those instructions requires an additional message per reviewer, which adds a serializing round-trip. The `Skill` tool is the right path for standalone interactive use (e.g. someone asking "ask codex about X"); inside `multi-review` we inline the CLI invocations directly to preserve the single-message parallelism.
+
+### The three tool calls (one assistant message)
+
+1. **Codex — `Bash` tool** (not `Skill`):
+
+   ```bash
+   codex exec \
+     --sandbox read-only \
+     -c model_reasoning_effort="high" \
+     -c stream_idle_timeout_ms=600000 \
+     -c project_doc="$HOME/.claude/CLAUDE.md" \
+     -c project_doc="./CLAUDE.md" \
+     "<the adversarial review prompt below, with the diff already inlined>"
+   ```
+
+   **Don't pin `-m <model>`** — let codex use its default. As the CLI's default model updates, the skill benefits automatically. (`model_reasoning_effort="high"` is a behavior setting, not a model pin; keep it for review depth.)
+
+   Codex runs synchronously here (no `run_in_background`). It will take 2-5 minutes — that's fine, the other two tool calls in the same message proceed concurrently.
+
+2. **Opus — `Task` tool**, `subagent_type: "general-purpose"`, with the entire adversarial review prompt as the `prompt` argument. Foreground (default) — also concurrent with the other two same-message calls.
+
+3. **Gemini — `Bash` tool** (not `Skill`):
+
+   ```bash
+   cat <<'PROMPT_EOF' | gemini --approval-mode plan
+   <the adversarial review prompt below, with the diff already inlined>
+   PROMPT_EOF
+   ```
+
+   Use heredoc (stdin), not `gemini -p "<prompt>"`, because inlined diffs blow past shell ARG_MAX (~256KB on macOS) on real PRs.
+
+After the single message returns, you have all three reviewer outputs at once. Parse JSON from each.
+
+Retry-once-on-non-JSON: if any reviewer's output isn't parseable JSON, re-issue that one call (alone, since the others succeeded). If it fails twice, proceed with the survivors and note the gap.
 
 ### Adversarial review prompt
 

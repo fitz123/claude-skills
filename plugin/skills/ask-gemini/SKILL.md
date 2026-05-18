@@ -94,8 +94,9 @@ echo "<prompt>" | gemini --approval-mode plan
 ```
 
 Optional flags:
-- `-m <model>` — pin a specific model. Without `-m`, Gemini selects a default. For JSON-strict outputs in `multi-review`, pinning a pro-tier model improves reliability (the caller retries once on non-JSON, so occasional misses are tolerated).
 - `--output-format json` — structured CLI output wrapper; orthogonal to the prompt-level JSON contract. Usually not needed.
+
+**Don't pin `-m <model>`** — always use Gemini's default. As Gemini's defaults evolve, this skill picks up the upgrade automatically. JSON-strict callers (`multi-review`) absorb occasional default-model misses via their own retry-once-on-non-JSON policy.
 
 ### Step 5: Process Response
 
@@ -144,7 +145,7 @@ Note: at the time of writing, `multi-review` does not yet exist in this plugin �
 - **Large-prompt handling**: prefer stdin (`echo "<prompt>" | gemini --approval-mode plan`) over `-p "<prompt>"` for prompts approaching shell `ARG_MAX` (~256KB on macOS). Embedded diffs and multi-file context blow past this threshold quickly.
 - **`--approval-mode plan` semantics**: plan mode is read-only filesystem (no write, no execute) AND restricts subagent invocations to a fixed allowlist (`codebase_investigator`, `cli_help`). The model can still read files via built-in tools. The full mode set is `default | auto_edit | yolo | plan`. Plan is the documented headless mode for code review; in non-interactive runs, `default` also works fine because Gemini's policy engine treats `ask_user` as `deny` when there's no TTY. `yolo` works too but lifts all safety nets. **For this skill, `plan` is the default** — but be aware of the subagent allowlist constraint above.
 - **Authentication**: Gemini CLI checks `GEMINI_API_KEY` env var **or** `gcloud auth application-default login` (whichever the homebrew build wires up first). Document both paths and let the user pick — neither is privileged in this skill.
-- **Default model selection**: invoking `gemini` without `-m` selects a default model that may shift over time. For JSON-strict outputs in `multi-review`, pin a specific pro-tier model via `-m <name>` if reliability matters. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses, so pinning is recommended-not-required.
+- **Default model selection**: invoking `gemini` without `-m` uses the CLI default — which evolves over time as Google updates the CLI. This skill intentionally does NOT pin a model, so it picks up upgrades automatically. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses.
 
 ## Important Rules
 
@@ -165,4 +166,4 @@ Note: at the time of writing, `multi-review` does not yet exist in this plugin �
 - **Gemini not found**: `which gemini` — install via `brew install gemini-cli` (or the project's documented install path).
 - **Authentication errors**: set `GEMINI_API_KEY` env var, or run `gcloud auth application-default login`. Check `gemini --help` for the CLI's auth subcommand if it has one.
 - **Empty/garbled output**: re-run with stdin instead of `-p` (prompt may have hit `ARG_MAX`).
-- **Non-JSON when JSON was required**: caller handles retry; if it persists, tighten the prompt's output contract or pin a pro-tier model via `-m`.
+- **Non-JSON when JSON was required**: caller handles retry; if it persists, tighten the prompt's output contract. (Don't reach for `-m <model>` to "fix" reliability — keep the skill default-model-driven so CLI upgrades carry through.)
