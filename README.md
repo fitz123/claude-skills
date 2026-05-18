@@ -48,7 +48,7 @@ Copilot-aware GitHub PR review loop. Polls for Copilot reviews (with required re
 
 ### [`multi-review`](plugin/skills/multi-review/SKILL.md)
 
-Three-reviewer adversarial code review against a base branch. Runs Codex (via `thinking-tools:ask-codex`), a fresh Opus subagent (via `Task`), and Gemini (via `claude-skills:ask-gemini`) in parallel, merges findings, and presents them as a single plannotator pass before applying any fix in one commit.
+Three-reviewer adversarial code review against a base branch. Runs Codex (via direct `codex exec`), a fresh Opus subagent (via `Task`), and Gemini (via the `gemini` CLI) in parallel, merges findings, and presents them as a single plannotator pass before applying any fix in one commit.
 
 ```
 /multi-review
@@ -61,7 +61,7 @@ Prerequisites:
 
 ### [`ask-gemini`](plugin/skills/ask-gemini/SKILL.md)
 
-Thin wrapper around the local `gemini` CLI for second-opinion runs on diffs or quick adversarial reviews. Used as one of the three reviewers by `multi-review`, but also invocable standalone.
+Thin wrapper around the local `gemini` CLI for second-opinion runs on diffs or quick adversarial reviews. Best used standalone when you want a focused Gemini pass outside `multi-review`.
 
 ```
 ask gemini about this diff
