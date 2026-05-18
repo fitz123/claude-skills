@@ -1,6 +1,6 @@
 ---
 name: multi-review
-description: Run three independent reviewers (Codex via thinking-tools:ask-codex + a fresh Opus subagent via Task + Gemini via claude-skills:ask-gemini) in parallel against the current branch, merge findings, then write all questions to a markdown file for single-pass plannotator review before applying anything. Use when user says "multi review", "/multi-review", "triple review", "dual review" (legacy), "co-review", "cross-review", "opus+codex+gemini review", or asks for a multi-reviewer code review.
+description: Run three independent reviewers (Codex via direct `codex exec`, a fresh Opus subagent via `Task`, and Gemini via the `gemini` CLI) in parallel against the current branch, merge findings, then write all questions to a markdown file for single-pass plannotator review before applying anything. Use when user says "multi review", "/multi-review", "triple review", "dual review" (legacy), "co-review", "cross-review", "opus+codex+gemini review", or asks for a multi-reviewer code review.
 argument-hint: "[base-branch]"
 allowed-tools:
   - Bash(cargo:*)
@@ -27,7 +27,7 @@ allowed-tools:
 
 # Multi Review
 
-Codex (via `thinking-tools:ask-codex`), a fresh Opus subagent (via the `Task` tool with `subagent_type: "general-purpose"`), and Gemini (via `claude-skills:ask-gemini`) review the branch in parallel. Findings merged, written to one markdown file, opened with `plannotator annotate` for single-pass review, applied in one commit. Save pre-review HEAD as the rollback SHA.
+Codex (via direct `codex exec`), a fresh Opus subagent (via the `Task` tool with `subagent_type: "general-purpose"`), and Gemini (via the `gemini` CLI) review the branch in parallel. Findings merged, written to one markdown file, opened with `plannotator annotate` for single-pass review, applied in one commit. Save pre-review HEAD as the rollback SHA.
 
 ## Prerequisites
 
