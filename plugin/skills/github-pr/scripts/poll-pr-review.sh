@@ -28,6 +28,24 @@ comment_author="copilot-swe-agent"
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 [ -z "$repo" ] && { echo "ERROR: couldn't determine repo (run inside a gh-tracked clone)"; exit 1; }
 
+# Pre-flight: if Copilot isn't a pending requested reviewer, request one before
+# polling — otherwise the loop just burns its timeout waiting for a review that
+# was never queued (e.g. when the repo doesn't auto-request Copilot on PR open,
+# or after a prior review completed and the user forgot to re-request).
+#
+# `requested_reviewers` lists the BOT login `copilot-pull-request-reviewer`,
+# even though the POST endpoint takes the literal token `Copilot`. Check the
+# listing form here.
+pending=$(gh api "repos/$repo/pulls/$pr/requested_reviewers" \
+    --jq '[.users[]? | select(.login == "copilot-pull-request-reviewer")] | length' 2>/dev/null || echo 0)
+if [ "$pending" -eq 0 ]; then
+    echo "[poll] no pending Copilot review request — invoking request-copilot-rereview.sh first"
+    "$(dirname "$0")/request-copilot-rereview.sh" "$pr" || \
+        echo "[poll] WARNING: pre-flight request returned non-zero; polling anyway"
+else
+    echo "[poll] Copilot already pending as reviewer — skipping pre-flight request"
+fi
+
 # Baselines: count formal reviews + count of Copilot comments at start. ANY
 # increase in either is a fresh signal.
 start_reviews=$(gh pr view "$pr" --json reviews \
