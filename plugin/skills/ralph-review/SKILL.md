@@ -40,8 +40,8 @@ Every phase passes findings to a **fresh fixer subagent** that verifies, fixes, 
 **Invoke from the target repo.** All git commands run against CWD.
 
 ```
-/ralphex            # diff against main
-/ralphex develop    # diff against develop
+/ralph-review            # diff against main
+/ralph-review develop    # diff against develop
 ```
 
 ## Severity tagging contract (load-bearing)
@@ -56,7 +56,7 @@ Format each finding on its own line as: `SEVERITY: file:line — description`. U
 
 ## Progress scratchpad
 
-A single file at `/tmp/ralphex-progress-<branch>.txt` accumulates per-phase findings, fixer responses, and decisions. Orchestrator initialises it in Step 1 and appends after every phase via simple `echo "..." >> file` (one Bash call per append, no `&&`/`;` chains).
+A single file at `/tmp/ralphex-progress-<slug>.txt` accumulates per-phase findings, fixer responses, and decisions, where `<slug>` is the sanitized branch name derived in Step 1 (`/` and other unsafe chars replaced). Orchestrator initialises it in Step 1 and appends after every phase via simple `echo "..." >> "$PROGRESS_FILE"` (one Bash call per append, no `&&`/`;` chains).
 
 **Codex and the fixer both read this file** so they can:
 
@@ -83,17 +83,34 @@ Determine review scope:
 - If no diverged commits but unstaged/staged/untracked changes exist, set `DIFF_MODE=uncommitted`.
 - If nothing to review, say so and stop.
 
-Stash pre-existing changes if any: `git status --porcelain` → if dirty, `git stash push --include-untracked -m "ralphex: pre-existing"`. Restore in Step 6 with `git stash pop --index`.
+Stash pre-existing changes — but ONLY in committed-diff mode. Skip stashing entirely when `DIFF_MODE=uncommitted` (the dirty tree IS the review scope; stashing would hide it from every reviewer):
+
+```
+# Only when reviewing committed diffs:
+if [ "$DIFF_MODE" != "uncommitted" ]; then
+    [ -n "$(git status --porcelain)" ] && git stash push --include-untracked -m "ralphex: pre-existing"
+fi
+```
+
+Restore in Step 6 with `git stash pop --index` (also conditional — see Step 6).
 
 Capture pre-review HEAD SHA: `git rev-parse HEAD` (used in review phase 4 for second-pass diff scoping).
 
-Initialise the progress file:
+Derive a filesystem-safe branch slug for the progress file path — git branches can contain `/` (e.g. `feature/foo`) which would turn `/tmp/ralphex-progress-<branch>.txt` into a nested path under a non-existent directory. Replace `/` and other unsafe chars:
 
 ```
-printf "# ralphex progress\nbranch: <branch>\nbase: <base>\nstarted: <ISO>\npre-review SHA: <sha>\n\n" > /tmp/ralphex-progress-<branch>.txt
+BRANCH=$(git branch --show-current)
+SLUG=$(printf '%s' "$BRANCH" | tr '/ ' '__' | tr -cd '[:alnum:]._-')
+PROGRESS_FILE="/tmp/ralphex-progress-${SLUG}.txt"
 ```
 
-Show the file path to the user once.
+Initialise the progress file (substitute the resolved `$PROGRESS_FILE` path everywhere it appears in subsequent steps; the inner `branch:` line still records the un-sanitized branch name for human readability):
+
+```
+printf "# ralphex progress\nbranch: %s\nslug: %s\nbase: %s\nstarted: %s\npre-review SHA: %s\n\n" "$BRANCH" "$SLUG" "$BASE" "$(date -u +%FT%TZ)" "$(git rev-parse HEAD)" > "$PROGRESS_FILE"
+```
+
+Show `$PROGRESS_FILE` to the user once. From here on, all references in this skill to `/tmp/ralphex-progress-<branch>.txt` resolve to `$PROGRESS_FILE`.
 
 ## Read-only preamble (used by all review agents)
 
@@ -106,7 +123,7 @@ Get changes: run git diff {base}...HEAD and git diff --stat {base}...HEAD.
 Also check git status --short for untracked files relevant to the diff and read those.
 Read the actual source files for full context — do not review from diff alone.
 
-Read the progress file at /tmp/ralphex-progress-<branch>.txt for prior-phase findings and fixes — re-evaluate independently; previous fixes may be incomplete.
+Read the progress file (path passed in as `$PROGRESS_FILE` — orchestrator substitutes the resolved path before sending this prompt) for prior-phase findings and fixes — re-evaluate independently; previous fixes may be incomplete.
 
 Report pre-existing issues too — do not dismiss findings just because code existed before this branch.
 
@@ -273,7 +290,8 @@ Tag each finding with severity:
 - MAJOR: correctness issues, missing error handling, broken contracts
 - MINOR: style, doc drift, nits
 
-Format each on its own line: SEVERITY: file:line - description.
+Format each on its own line: SEVERITY: file:line — description.
+(The delimiter is an em-dash `—`, matching the rest of this pipeline's contract.)
 If nothing found: NO ISSUES FOUND.
 ```
 
@@ -375,7 +393,7 @@ This is your return value to the parent. Be specific.
 
 ## Step 6 — Restore + final report
 
-If pre-existing changes were stashed in Step 1: `git stash pop --index` (best-effort — surface conflicts but don't fail the run).
+If pre-existing changes were stashed in Step 1 (only happens when `DIFF_MODE` was not `uncommitted` and the working tree was dirty): `git stash pop --index` (best-effort — surface conflicts but don't fail the run). In uncommitted mode no stash was taken, so skip this step.
 
 Append final state to progress file (each line a separate `echo >> file`):
 
@@ -401,7 +419,7 @@ review phase 3 (codex):         clean | minor-only-exit (iter N) | max-iter-hit 
 review phase 4 (critical only): clean | fixed
 
 pre-review SHA: <sha>
-progress:       /tmp/ralphex-progress-<branch>.txt
+progress:       <$PROGRESS_FILE resolved in Step 1>
 ```
 
 Any `⚠` → don't say "ready to PR".
@@ -409,7 +427,7 @@ Any `⚠` → don't say "ready to PR".
 ## Key rules
 
 - Each subagent gets a fresh context — orchestrator never reads code, never runs tests, never verifies findings.
-- Pass the FULL unedited findings list to the fixer — do NOT summarize, filter, or dismiss in the orchestrator.
+- Pass the FULL findings list to the fixer — do NOT filter, dismiss, or paraphrase descriptions. The orchestrator's only allowed transform is the structural one specified in Step 2's "Collect + fixer" section: group findings under `### CRITICAL`/`### MAJOR`/`### MINOR` headings, and when two agents independently flag the same `file:line` with the same root cause, merge into a single bullet joining their names with `+` (e.g. `quality+implementation: main.go:12 — ...`). Description text, severity tags, and file:line locations stay verbatim — the merge changes only the agent attribution prefix.
 - All `subagent_type` values are `general-purpose` — the prompt provides the specialization.
 - Review agents (review phases 1, 2, 4): `run_in_background: false` (or omit) — they parallelize via single-message dispatch and the parent turn blocks until all return.
 - Codex (review phase 3): `run_in_background: true` — frees the orchestrator turn during the 2-5 min run; harness fires a completion notification.
