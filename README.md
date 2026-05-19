@@ -31,12 +31,19 @@ The main planning skill. Conversational dialogue that turns ideas into validated
 
 ### [`ralph-review`](plugin/skills/ralph-review/SKILL.md)
 
-Multi-agent code review pipeline. 5 specialized agents (quality, implementation, testing, simplification, documentation) review changes in parallel, verify findings, fix confirmed issues, then iterate with codex cross-review.
+Automatic pre-PR iterative review pipeline modeled on umputun's 4-stage flow. Every phase passes findings to a fresh fixer subagent (verify → baseline → fix → validate → commit) so the orchestrator never reads code or runs tests itself. Severity tagging (`CRITICAL/MAJOR/MINOR`) drives codex's minor-only early-exit; a `/tmp/ralphex-progress-<slug>.txt` scratchpad (where `<slug>` is the branch name with `/` and other unsafe chars replaced) threads context across phases.
+
+1. **Review phase 1** — 5 parallel agents (quality, implementation, testing, simplification, documentation); iters 2+ narrow to 2 critical-only agents; loop ≤5.
+2. **Review phase 2** — code smells single pass.
+3. **Review phase 3** — codex external review (background, severity-based exit, ≤10 iterations).
+4. **Review phase 4** — critical-only safety net (single pass).
 
 ```
 /ralph-review           # diff against main
 /ralph-review develop   # diff against develop
 ```
+
+Requires the `codex` CLI on `PATH` for review phase 3 (skipped gracefully if missing).
 
 ### [`github-pr`](plugin/skills/github-pr/SKILL.md)
 
