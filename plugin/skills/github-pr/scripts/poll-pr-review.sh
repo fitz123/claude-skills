@@ -37,7 +37,7 @@ repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 # even though the POST endpoint takes the literal token `Copilot`. Check the
 # listing form here.
 pending=$(gh api "repos/$repo/pulls/$pr/requested_reviewers" \
-    --jq '[.users[]? | select(.login == "copilot-pull-request-reviewer")] | length' 2>/dev/null || echo 0)
+    --jq "[.users[]? | select(.login == \"$review_author\")] | length" 2>/dev/null || echo 0)
 if [ "$pending" -eq 0 ]; then
     echo "[poll] no pending Copilot review request — invoking request-copilot-rereview.sh first"
     "$(dirname "$0")/request-copilot-rereview.sh" "$pr" || \
