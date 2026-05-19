@@ -1,6 +1,6 @@
 ---
 name: ralph-review
-description: Runs parallel multi-agent code review (quality, implementation, testing, simplification, documentation), verifies findings, fixes confirmed issues, then iterates automatically (codex cross-review up to 3 rounds, second-pass up to 3 rounds) until clean. Use when reviewing branch changes, after implementing features, or when user says 'review' or 'ralphex'.
+description: Automatic pre-PR iterative code review — 5 parallel agents (comprehensive) with critical re-check loop, code smells pass, codex external review loop (background, severity-based exit), and critical-only safety net. Each phase uses a fresh fixer subagent to verify, fix, validate, and commit. Use when reviewing branch changes before opening a PR, after implementing features, or when user says 'review' or 'ralphex'.
 argument-hint: "[base-branch]"
 allowed-tools:
   - Bash(git:*)
@@ -14,6 +14,8 @@ allowed-tools:
   - Bash(python:*)
   - Bash(codex:*)
   - Bash(which:*)
+  - Bash(echo:*)
+  - Bash(printf:*)
   - Read(*)
   - Write(*)
   - Edit(*)
@@ -22,209 +24,395 @@ allowed-tools:
   - Task(*)
 ---
 
-# Ralphex — Multi-Agent Code Review
+# Ralphex — Pre-PR Multi-Agent Code Review
 
-Adapted from the review pipeline of [umputun/ralphex](https://github.com/umputun/ralphex). Implements Phases 2-4 (multi-agent review, external review, second pass) as a prompt-only workflow. Plan execution, finalize step, web dashboard, and notifications are not included.
+Adapted from [umputun/ralphex](https://github.com/umputun/ralphex) and the review pipeline in [umputun/cc-thingz/plugins/planning](https://github.com/umputun/cc-thingz/tree/master/plugins/planning). **Standalone review skill** — no plan file, no implementation, no finalize. Run it before opening a PR. Fully automatic from Step 1 onward — no user gates between phases.
 
-5 specialized agents review changes in parallel, findings are verified and fixed. The pipeline runs automatically end-to-end after Step 1 scope selection — no user intervention needed during iteration loops. Commits are made automatically; a full summary is presented at the end.
+**Pipeline (4 review phases, matching umputun's stage layout):**
 
-**Pipeline overview:** Step 1 (scope) → Step 2 (5 agents) → Step 3 (verify) → Step 4 (fix + auto-commit) → Step 5 (codex loop, up to 3 rounds) → Step 6 (second-pass loop, up to 3 rounds) → done. Early exit at Step 3 if no issues found.
+1. **Review phase 1 — comprehensive then critical re-check** — iter 1: 5 parallel agents (quality, implementation, testing, simplification, documentation). Iter 2+: 2 agents (quality + implementation) critical-only. Loop up to 5 iterations, fresh fixer subagent after each.
+2. **Review phase 2 — code smells** — 1 smells agent → fixer (single pass)
+3. **Review phase 3 — codex external review** — codex runs in background, severity-based early-exit, up to 10 iterations, each iteration's findings handed to a fresh fixer
+4. **Review phase 4 — critical only** — 2 agents (quality + implementation) single pass → fixer (safety net)
 
-**Invoke from the target repo's directory.** All git commands run against CWD — do not use `git -C`.
+Every phase passes findings to a **fresh fixer subagent** that verifies, fixes, validates, and commits. The orchestrator never reads code, runs tests, or modifies files — that keeps its context lean across 5+ codex iterations.
+
+**Invoke from the target repo.** All git commands run against CWD.
 
 ```
 /ralphex            # diff against main
 /ralphex develop    # diff against develop
 ```
 
+## Severity tagging contract (load-bearing)
+
+Every finding from every reviewer (agents AND codex) MUST be tagged:
+
+- **CRITICAL** — crashes, data loss, security holes, race conditions
+- **MAJOR** — incorrect behavior, missing error handling, broken contracts
+- **MINOR** — style, doc drift, nits, optional improvements
+
+Format each finding on its own line as: `SEVERITY: file:line — description`. Untagged findings count as MINOR. This contract drives the codex minor-only early-exit in review phase 3 and the severity filter in review phase 4.
+
+## Progress scratchpad
+
+A single file at `/tmp/ralphex-progress-<branch>.txt` accumulates per-phase findings, fixer responses, and decisions. Orchestrator initialises it in Step 1 and appends after every phase via simple `echo "..." >> file` (one Bash call per append, no `&&`/`;` chains).
+
+**Codex and the fixer both read this file** so they can:
+
+- See what was already dismissed and avoid re-flagging
+- Build context cheaper than re-explaining in every prompt
+
+The orchestrator never reads the file after Step 1 — only subagents do.
+
 ## Step 1: Gather Context
 
-Determine the base branch (argument or default `main`). Verify it exists: `git rev-parse --verify <base>`. If the branch does not exist, list available branches with `git branch -a`, suggest the closest match, and ask the user which branch to use.
+Determine the base branch (argument or default `main`). Verify it exists: `git rev-parse --verify <base>`. If missing, list available branches with `git branch -a`, suggest the closest match, and ask the user.
 
 Check working tree state:
 
 - `git log <base>..HEAD --oneline` — diverged commits
 - `git diff <base>...HEAD --stat` — changes in diverged commits
-- `git diff --stat` — unstaged changes
-- `git diff --cached --stat` — staged changes
-- `git status --short` — working tree status (staged, unstaged, untracked)
+- `git diff --stat` — unstaged
+- `git diff --cached --stat` — staged
+- `git status --short` — full state
 
 Determine review scope:
 
-- If diverged commits exist, primary scope is `git diff <base>...HEAD`. If working tree is also dirty, review only committed changes (uncommitted changes are out of scope). Mention the dirty state in the report so the user is aware.
+- If diverged commits exist, primary scope is `git diff <base>...HEAD`. If working tree is also dirty, review only committed changes; note the dirty state.
 - If no diverged commits but unstaged/staged/untracked changes exist, set `DIFF_MODE=uncommitted`.
 - If nothing to review, say so and stop.
 
-## Step 2: Launch 5 Agents in Parallel
+Stash pre-existing changes if any: `git status --porcelain` → if dirty, `git stash push --include-untracked -m "ralphex: pre-existing"`. Restore in Step 6 with `git stash pop --index`.
 
-Send a SINGLE message with 5 Task tool calls (`subagent_type: "general-purpose"`). Do NOT use `run_in_background` — foreground agents run in parallel and block until all complete. Individual agent retries (line below) are permitted as separate follow-up messages.
+Capture pre-review HEAD SHA: `git rev-parse HEAD` (used in review phase 4 for second-pass diff scoping).
 
-**Review agents are READ-ONLY.** They must not edit, write, or commit. Only the main orchestrator edits files.
-
-Each agent gets the preamble + its specific prompt below, with `{base}` replaced by the actual base branch.
-If `DIFF_MODE=uncommitted`, replace the first preamble line (the `git diff {base}...HEAD` line) with: "Get changes: run `git diff`, `git diff --cached`, and `git diff --stat` to see all uncommitted and staged changes."
-
-Preamble (prepend to every agent prompt):
+Initialise the progress file:
 
 ```
+printf "# ralphex progress\nbranch: <branch>\nbase: <base>\nstarted: <ISO>\npre-review SHA: <sha>\n\n" > /tmp/ralphex-progress-<branch>.txt
+```
+
+Show the file path to the user once.
+
+## Read-only preamble (used by all review agents)
+
+This preamble is prepended to every review-agent prompt below. With `{base}` replaced. If `DIFF_MODE=uncommitted`, swap the diff line for: "Get changes: run `git diff`, `git diff --cached`, and `git diff --stat`."
+
+```
+CRITICAL: You are a READ-ONLY reviewer. Other agents run in parallel. Do NOT run git stash/checkout/reset or any command modifying the working tree. Only git diff, git log, git show, and read tools.
+
 Get changes: run git diff {base}...HEAD and git diff --stat {base}...HEAD.
 Also check git status --short for untracked files relevant to the diff and read those.
-Read the actual source files for full context. Do NOT edit or commit anything.
+Read the actual source files for full context — do not review from diff alone.
+
+Read the progress file at /tmp/ralphex-progress-<branch>.txt for prior-phase findings and fixes — re-evaluate independently; previous fixes may be incomplete.
+
 Report pre-existing issues too — do not dismiss findings just because code existed before this branch.
-Output plain text only — no markdown bold, code blocks, or headers. Use - lists.
-If no issues found, respond with exactly: No issues found.
+
+Tag every finding with severity (CRITICAL/MAJOR/MINOR) and format each on its own line as:
+  SEVERITY: file:line — description
+
+For docs/CLAUDE.md findings where no specific line applies, file:section is fine (e.g. MINOR: README.md:Installation — missing --foo flag).
+
+Plain text only. No markdown bold, no code fences, no headers. If no issues, respond with exactly: No issues found.
 ```
 
-**Quality** — bugs, security, error handling, races, leaks, information exposure:
+## Step 2 — Review phase 1: comprehensive then critical re-check (loop, ≤5)
+
+Report to user: `--- Review phase 1: comprehensive ---`
+
+Loop up to 5 iterations. **Iteration 1** dispatches 5 agents (comprehensive). **Iterations 2+** dispatch 2 agents (critical-only re-check); before each, report `--- Review phase 1: critical re-check (iteration N) ---`.
+
+### Iteration 1 — 5 parallel agents
+
+Send a SINGLE message with 5 Task tool calls (`subagent_type: "general-purpose"`). Do NOT use `run_in_background` for review agents — foreground tool calls in one message run in parallel and the assistant turn blocks until all return. Each prompt = preamble + the specialist block below.
+
+**Quality** — bugs, security, error handling, races, leaks:
 
 ```
-Check for:
-1. Logic errors - off-by-one, incorrect conditionals, wrong operators
-2. Edge cases - empty inputs, nil values, boundary conditions, concurrent access
+1. Logic errors - off-by-one, wrong operators, incorrect conditionals
+2. Edge cases - empty inputs, nil, boundaries, concurrent access
 3. Error handling - all errors checked, proper wrapping, no silent failures
-4. Resource management - proper cleanup, no leaks (file handles, connections, goroutines)
-5. Concurrency - race conditions, deadlocks, unsafe shared state
-6. Security - input validation, auth, injection, secret exposure, unintended information leakage
-7. Data integrity - validation, sanitization, consistent state management
-Prioritize straightforward implementations. Question unnecessary abstractions.
-Report: file:line, severity (critical/major/minor), issue, impact, fix suggestion.
+4. Resource management - cleanup, leaks (file handles, connections, goroutines)
+5. Concurrency - races, deadlocks, unsafe shared state
+6. Security - input validation, auth, injection, secret exposure, info leakage
+7. Data integrity - validation, sanitization, consistent state
 ```
 
-**Implementation** — requirement coverage, correctness, wiring, completeness:
+**Implementation** — correctness, wiring, completeness:
 
 ```
-Check for:
-1. Requirement coverage - all aspects of the goal addressed? Unhandled scenarios?
-2. Correctness of approach - solving the right problem? Potential failure conditions?
-3. Wiring and integration - components registered, routes added, handlers connected, configs updated?
+1. Requirement coverage - all aspects addressed? Unhandled scenarios?
+2. Correctness of approach - solving the right problem? Potential failures?
+3. Wiring - components registered, routes added, handlers connected, configs updated?
 4. Completeness - missing imports, unimplemented interfaces, incomplete migrations?
-5. Logic flow - data flows correctly input to output, transformations correct, state managed properly?
-6. Edge cases - empty inputs, null values, concurrent operations, error scenarios at boundaries
+5. Logic flow - data flows input→output, transformations correct, state managed
+6. Edge cases - empty, null, concurrent, error boundaries
 Ignore style — focus on correctness and approach validity.
-Report: file:line, severity (critical/major/minor), issue, impact, fix suggestion.
 ```
 
-**Testing** — missing tests, fake tests, independence, edge cases:
+**Testing** — missing tests, fake tests, independence:
 
 ```
-Check for:
-1. Missing tests - new code paths without tests, untested error paths, no integration tests at system boundaries
-2. Fake tests - always pass, check hardcoded values, verify mocks not code, conditional assertions, commented-out failing tests
-3. Test quality - verify behavior not implementation, descriptive names, proper setup/teardown, both success and failure scenarios
-4. Test independence - no shared mutable state, no order dependencies, proper isolation
+1. Missing tests - new code paths uncovered, untested error paths, no integration tests at boundaries
+2. Fake tests - always pass, hardcoded values, verify mocks not code, conditional assertions, commented-out failures
+3. Test quality - verify behavior not implementation, descriptive names, proper setup/teardown, success and failure paths
+4. Test independence - no shared mutable state, no order dependencies
 5. Edge case coverage - empty, nil, zero, max, concurrent, timeout
-6. Coverage gaps - functions or branches without test coverage
-Report: file:line, severity (critical/major/minor), issue, impact, fix suggestion.
+6. Coverage gaps - functions/branches uncovered
 ```
 
-**Simplification** — over-engineering, unnecessary abstraction:
+**Simplification** — over-engineering:
 
 ```
-Check for:
-1. Excessive abstraction - wrappers adding nothing, factories for single impl, interface on producer side, handler->service->repository pass-through layers
-2. Premature generalization - generic solutions for specific problems (event bus for one event type), config objects for 2 options
-3. Unnecessary indirection - pass-through wrappers, excessive chaining, DTO/mapper overkill, wrapper interfaces around primitive types
-4. Future-proofing - unused extension points, permanent feature flags, versioned internal APIs with single version
-5. Unnecessary fallbacks - unreachable fallback paths, disabled legacy code, dual implementations, error-suppressing fallbacks that mask problems
-6. Premature optimization - caching rarely-accessed data, custom structures when standard collections work, connection pooling for minimal operations
-Report: file:line, severity (critical/major/minor), pattern, problem, simpler alternative, effort (trivial/small/medium/large).
+1. Excessive abstraction - wrappers adding nothing, factories for single impl, interface on producer side, handler→service→repo pass-through
+2. Premature generalization - generic solutions for specific problems, config objects for 2 options
+3. Unnecessary indirection - pass-through wrappers, excessive chaining, DTO/mapper overkill
+4. Future-proofing - unused extension points, permanent feature flags, versioned internal APIs
+5. Unnecessary fallbacks - unreachable paths, disabled legacy code, dual implementations, error-suppressing fallbacks
+6. Premature optimization - caching rarely-accessed data, custom structures when standard collections work
 ```
 
-**Documentation** — README gaps, CLAUDE.md gaps, plan updates:
+**Documentation** — README, CLAUDE.md, plan files:
 
 ```
-Check README.md - must document: new features, CLI flags, API endpoints, config options, breaking changes, new deps.
-Skip: internal refactoring, bug fixes restoring documented behavior, test additions.
-Check CLAUDE.md - must document: new patterns, conventions, build commands, structure changes.
-Skip: standard code following existing patterns, simple fixes.
-Check plan files (docs/plans/, PLAN.md, TODO.md) if they exist - mark completed items, update status.
-Report: what is missing, where it goes, suggested content. Report problems only — no positive observations.
+Check README.md — must document: new features, CLI flags, API endpoints, configs, breaking changes, new deps. Skip: internal refactoring, behavior-restoring fixes, test additions.
+Check CLAUDE.md — must document: new patterns, conventions, build commands, structure changes. Skip: code following existing patterns, simple fixes.
+Check plan files (docs/plans/, PLAN.md, TODO.md) if present — flag stale checkboxes.
+Report what's missing, where it goes, suggested content.
 ```
 
-**If any agent fails or returns empty/garbage:** retry that single agent once in a separate message. If still failing, proceed without it and note the gap in the report.
+### Iterations 2+ — critical-only re-check (2 agents)
 
-## Step 3: Verify Findings
-
-Collect all agent findings. If no findings were reported (all responding agents said "No issues found"), report that the review is clean and stop — skip Steps 4-6. If an agent was skipped due to failure, note the gap but still stop if there are zero findings.
-
-For EACH issue (documentation findings may use file+section instead of file:line):
-
-1. Read actual code at file:line
-2. Check 20-30 lines of surrounding context
-3. Verify issue is real, merge duplicates from multiple agents
-4. Check for existing mitigations
-
-Classify:
-
-- **CONFIRMED** — real issue, fix it
-- **FALSE POSITIVE** — discard with brief reason
-
-If ALL findings are false positives, report "No actionable issues found" with the false positive list and stop.
-
-## Step 4: Report and Fix
-
-Present summary to the user with confirmed issues, false positives discarded, and fixes to apply.
-
-Record the current HEAD SHA before making any changes: `git rev-parse HEAD` (needed for second-pass scoping in Step 6 — this SHA captures the state before all fixes across Steps 4-5).
-
-Before making any edits, check if there are pre-existing staged or unstaged changes (`git status --porcelain`). If so, stash everything with `git stash push --include-untracked -m "ralphex: pre-existing changes"` to ensure a clean working tree and index. This prevents unrelated files from being committed during auto-commit. After the review pipeline completes (end of Step 6 or earlier exit), restore them with `git stash pop --index`.
-
-Discover test/lint commands from project files (Makefile, package.json, CI config, CLAUDE.md). Run them once as a baseline before applying any fixes — record which tests/lint checks already fail. Fix all confirmed issues and re-run tests/lint. If a NEW failure appears (not in the baseline), retry the fix once with a different approach. If still failing, revert that fix, classify the issue as a known limitation, and report it. If no test/lint commands are discoverable, note this in the report.
-
-Stage changes (`git add` specific files — only the files you modified) and commit automatically: use a single-line `git commit -m "fix: address review findings"` or for multi-line messages, write to a temp file first then `git commit -F /tmp/ralphex-commit-msg.txt`. Avoid heredoc subshells in git commit — they trigger permission prompts.
-
-Steps 2-4 run EXACTLY ONCE with all 5 agents. Proceed to Step 5.
-
-## Step 5: Codex Cross-Review Loop (if fixes were applied)
-
-First verify codex is available: run `which codex`. If codex is not installed, skip this step and proceed to Step 6 with a note that codex cross-review was skipped.
-
-This step runs iteratively — codex reviews, you evaluate and fix, codex reviews again until clean. Maximum 3 iterations.
-
-**Iteration loop:**
-
-5a. Run codex (omit `-m` to use the model from codex config):
+Send a SINGLE message with 2 Task tool calls — `Quality` and `Implementation` only. Each prompt = preamble + the specialist block ABOVE + this severity filter prepended:
 
 ```
-codex exec -c model_reasoning_effort=xhigh "Review the code changes on this branch for bugs, security issues, and logic errors. Run git diff {base}...HEAD to see changes. Read source files for context. Report: file:line, issue, impact, fix. If no issues: No issues found."
+Report ONLY CRITICAL and MAJOR issues — bugs, security vulnerabilities, data loss risks, broken functionality, incorrect logic, missing critical error handling. Ignore style, minor improvements, suggestions, documentation drift. Drop any MINOR findings.
+
+If no critical/major issues found, respond with exactly: No issues found.
 ```
 
-Note: replace `{base}` with the actual base branch. If codex returns an authentication or model error (e.g. "model is not supported"), skip this step entirely and proceed to Step 6 with a note — do NOT try alternative model names.
+### Collect + fixer (every iteration)
 
-5b. Evaluate codex output — for EACH finding, read the code and trace the flow:
-
-- **Valid issues** — fix them, run tests/linter to verify. Do NOT commit yet. Go to 5c.
-- **All findings invalid** — explain why each is invalid (intentional design, already mitigated, misunderstood context). Go to 5c.
-- **Codex explicitly reports "No issues found"** — if there are uncommitted fixes (files were modified by fixes — check with `git status --porcelain`; safe because pre-existing changes were stashed in Step 4), stage and commit automatically with message `"fix: address codex review findings"`. Proceed to Step 6.
-- **Empty or error output** (codex crashed/timed out) — retry once. If still empty, skip remaining iterations and proceed to Step 6 with a note.
-
-5c. If ALL findings in this iteration were previously dismissed in an earlier iteration (same issues, same reasoning), exit the loop — codex is cycling. If there are uncommitted fixes (files were modified by fixes — check with `git status --porcelain`; safe because pre-existing changes were stashed in Step 4), stage and commit them. Proceed to Step 6. Otherwise, re-run codex (back to 5a) with the fixes applied. When re-running after dismissed findings, append a summary of what was dismissed and why to the codex prompt so it can focus on new issues.
-
-**Loop exit conditions** (for each: if files were modified by fixes, stage and commit them before proceeding; if no changes, skip the commit):
-
-- Codex explicitly reports no issues → proceed to Step 6
-- All findings are repeats of previously dismissed issues → proceed to Step 6
-- Maximum 3 iterations reached → proceed to Step 6 with a note about remaining unresolved codex findings
-
-## Step 6: Second Pass (if fixes were applied)
-
-Re-launch only `quality` + `implementation` agents (2 Task calls, same message).
-
-**Second-pass prompt modifier** — prepend to each agent's prompt, replacing the standard preamble diff line:
+Collect findings from ALL returned agents. Build the STRICT bullet-list report:
 
 ```
-This is a second-pass review of ONLY the fix commits from Steps 4-5.
-Get changes: run git diff <pre-fix-sha>..HEAD to see all fixes applied.
-ONLY report issues introduced by the fixes that would cause runtime failures, data loss, or security
-vulnerabilities. Ignore style, documentation, naming, and simplification issues.
-Output plain text only — no markdown bold, code blocks, or headers. Use - lists.
-If nothing critical found, respond: No issues found.
+### CRITICAL
+- <agent>: <file>:<line> — <description>
+
+### MAJOR
+- <agent>: <file>:<line> — <description>
+
+### MINOR
+- <agent>: <file>:<line> — <description>
+
+Total: N findings (C critical, M major, m minor)
 ```
 
-Where `<pre-fix-sha>` is the HEAD SHA recorded at the start of Step 4.
+Rules:
 
-Loop rules:
+- Skip a severity heading if empty.
+- For critical-only iterations (2+), drop MINOR entirely.
+- Merge dupes across agents: if two agents reported the same `file:line` + same root cause, one bullet with agents joined by `+` (e.g. `quality+implementation: main.go:12 — ...`).
+- Preserve agent attribution (don't rewrite as "agents").
 
-- If zero issues found, report done
-- If issues found and fixed: check `git status --short` before staging — if no files were actually modified, stop and report remaining issues. If the same issue recurs across consecutive iterations, try a different fix approach; if still unfixable, classify as a known limitation and stop. Otherwise stage, commit automatically, and re-run Step 6
-- Maximum 3 second-pass iterations — if issues persist after 3 rounds, report remaining and stop
+**If all agents responded "No issues found":** append `echo "review phase 1 iter N: clean" >> <PROGRESS_FILE>`, report `Review phase 1: clean`, and proceed to Step 3.
+
+Otherwise append findings to progress, show a compact list to the user, then **spawn ONE fixer subagent** (Task, foreground, `general-purpose`). Use the fixer prompt below with `<COMMIT_MSG>` = `"fix: address review phase 1 findings"`. After fixer returns, show its `FIXES:` block, report `Review phase 1: iteration N fixes applied`, then loop back to the next iteration (up to 5 total).
+
+If 5 iterations reached with findings still present, report `Review phase 1: max iterations reached, moving on`, append to progress, and proceed to Step 3.
+
+**Retry rule (any iteration):** if any single agent fails or returns garbage, retry that agent once in a separate message. If still failing, proceed with the rest and note the gap.
+
+## Step 3 — Review phase 2: code smells (single pass)
+
+Report to user: `--- Review phase 2: code smells analysis ---`
+
+Spawn 1 Task subagent (foreground, `general-purpose`) with preamble + this block:
+
+```
+Review code for style consistency, convention adherence, and code smells.
+
+1. Project conventions - read both project-level CLAUDE.md and user-level CLAUDE.md (if present), plus any docs they reference (coding standards, style guides). Check if changed code follows them.
+2. Style consistency - naming, organization, import ordering, comment style, error handling pattern, logging
+3. Code smells - dead code, duplication, long functions, deep nesting, magic numbers, inconsistent abstraction levels
+4. Anti-patterns - god objects, shotgun surgery, feature envy, primitive obsession
+
+For each finding: location, what's inconsistent, project convention (cite CLAUDE.md or existing code as evidence), specific fix.
+Focus on consistency with existing code, not personal preferences.
+```
+
+After the agent returns:
+
+- If "No issues found" → report `Smells analysis: clean`, append `echo "review phase 2: clean" >> <PROGRESS_FILE>`, proceed to Step 4.
+- Else: build the STRICT bullet-list report, append to progress, spawn fixer with `<COMMIT_MSG>` = `"fix: address code smells"`, show FIXES, proceed to Step 4.
+
+No loop — single pass.
+
+## Step 4 — Review phase 3: codex external review (background loop, ≤10)
+
+`which codex` — if missing, report `External review: skipped (no external tool available)`, append `echo "review phase 3: skipped (no codex)" >> <PROGRESS_FILE>`, proceed to Step 5.
+
+Report to user: `--- Review phase 3: codex external review ---`
+
+Adversarial loop, up to 10 iterations. Codex runs in the background so the orchestrator yields its turn during the 2-5 min run — the harness fires a `<task-notification>` on completion. Do NOT poll or sleep.
+
+### Per iteration
+
+**4a.** Resolve `DIFF_CMD`: iteration 1 = `git diff {base}...HEAD`, subsequent = `git diff`. Build the codex prompt (substitute `<DIFF_CMD>`, `<PROGRESS_FILE>`):
+
+```
+Review code changes. Run <DIFF_CMD> to see changes. Read source files for context.
+Read the progress file at <PROGRESS_FILE> for prior review iterations and fixer responses — re-evaluate independently; previous fixes may be incomplete, and previously dismissed issues may be real.
+
+Check for: bugs, security issues, race conditions, error handling, code quality.
+
+Tag each finding with severity:
+- CRITICAL: crashes, data loss, security, races
+- MAJOR: correctness issues, missing error handling, broken contracts
+- MINOR: style, doc drift, nits
+
+Format each on its own line: SEVERITY: file:line - description.
+If nothing found: NO ISSUES FOUND.
+```
+
+**4b.** Run via `Bash` tool with `run_in_background: true`:
+
+```
+codex exec -c model_reasoning_effort=xhigh "<prompt>"
+```
+
+Do NOT pin `-m` (let codex use its config default). If codex returns an auth/model error (e.g. "model is not supported"), report `Codex review: skipped (model error)`, append `echo "review phase 3: codex error — skipping remainder" >> <PROGRESS_FILE>`, proceed to Step 5 — do NOT try alternative model names.
+
+**4c.** After the completion notification, read codex output:
+
+- "NO ISSUES FOUND" or zero findings → report `Codex review: clean`, append `echo "review phase 3 iter N: clean" >> <PROGRESS_FILE>`, proceed to Step 5.
+- Otherwise scan for `CRITICAL` or `MAJOR` markers (case-insensitive whole-word). Set `has_blocking = true` if either present, else `false`.
+
+**4d.** Show codex findings to user (compact list).
+
+**4e.** Spawn ONE fixer subagent (Task, foreground, `general-purpose`). Use the fixer prompt below with codex output as `<FINDINGS_REPORT>` and `<COMMIT_MSG>` = `"fix: address codex review findings"`. Show FIXES to user.
+
+**4f.** Decide:
+
+- `has_blocking = false` (minor-only or no blocking findings) → report `Codex review: only minor findings — fixes applied, stopping loop`, append `echo "review phase 3: minor-only exit at iter N" >> <PROGRESS_FILE>`, proceed to Step 5.
+- `has_blocking = true` → loop back to 4a.
+
+If 10 iterations reached with blocking issues, report `Codex review: max iterations reached, moving on`, append `"review phase 3: max iterations reached"`, proceed.
+
+## Step 5 — Review phase 4: critical only (single pass)
+
+Report to user: `--- Review phase 4: critical/major only (single pass) ---`
+
+Send a SINGLE message with 2 Task tool calls — `Quality` and `Implementation` agents (foreground). Preamble + Quality/Implementation specialist block + this scope override (substitute `<PRE_REVIEW_SHA>` from Step 1):
+
+```
+This is a final critical-only safety-net review covering all changes since pre-review HEAD.
+Run git diff <PRE_REVIEW_SHA>..HEAD to see ALL fixes applied across phases 1-3.
+
+Report ONLY CRITICAL or MAJOR issues — runtime failures, data loss, security vulnerabilities, broken functionality, incorrect logic, missing critical error handling. Ignore style, docs, naming, simplification. Drop any MINOR findings.
+
+Tag findings: SEVERITY: file:line — description.
+If nothing critical: respond exactly: No issues found.
+```
+
+After both agents return:
+
+- If both clean → report `Review phase 4: clean`, append `echo "review phase 4: clean" >> <PROGRESS_FILE>`, proceed to Step 6.
+- Else: build STRICT report (CRITICAL + MAJOR only), append to progress, spawn fixer with `<COMMIT_MSG>` = `"fix: address review phase 4 findings"`, show FIXES, proceed to Step 6.
+
+No loop — single pass. If new issues survive review phase 4's fixer, they're recorded as known limitations in the final report.
+
+## Fixer subagent prompt (used by all phases)
+
+Spawn ONE Task subagent, `subagent_type: "general-purpose"`, foreground. Substitute `<FINDINGS_REPORT>`, `<PROGRESS_FILE>`, `<COMMIT_MSG>`:
+
+```
+Code review found the following issues. Verify and fix them.
+
+Progress file: <PROGRESS_FILE> (read for prior-iteration context — earlier findings, dismissals, fixes)
+
+FINDINGS:
+<FINDINGS_REPORT>
+
+STEP 1 — VERIFY:
+For each finding, read 20-30 lines of context at file:line. Classify:
+- CONFIRMED: real issue, fix it
+- FALSE POSITIVE: doesn't exist or already mitigated — discard with reason
+
+STEP 2 — BASELINE TESTS:
+Discover test/lint commands from project files (Makefile, package.json, pyproject.toml, CI config, CLAUDE.md). Run them ONCE as baseline before fixing — record which already fail. If none discoverable, note it and skip validation.
+
+STEP 3 — FIX:
+Fix all confirmed issues (including adding missing tests if flagged). If a fix introduces a NEW failure (not in baseline), retry once with a different approach. If still failing, revert that fix and record as a known limitation.
+
+STEP 4 — VALIDATE:
+Re-run test/lint commands. Code MUST build and tests MUST pass (excluding baseline-pre-existing failures) before commit. NEVER commit broken code.
+
+STEP 5 — COMMIT:
+Stage by name only the files you modified. Commit with: git commit -m "<COMMIT_MSG>"
+For multi-line messages, write to /tmp/ralphex-commit-msg.txt first then: git commit -F /tmp/ralphex-commit-msg.txt
+Never use heredoc subshells in git commit (permission prompts).
+
+STEP 6 — APPEND PROGRESS:
+Use one echo per line, redirecting >> to <PROGRESS_FILE>. Format:
+  ## <phase> fixes
+  - confirmed: <count>
+  - false positives: <count>
+  - fixes: <one line per fix>
+  - baseline-failures-preserved: <list, or none>
+  - validation: <passed/failed>
+
+STEP 7 — REPORT (mandatory, structured):
+Final response MUST start with `FIXES:` on its own line, followed by:
+- fixed: file:line — what changed
+- false positive: description — why discarded
+- known limitation: description — why unfixable
+
+This is your return value to the parent. Be specific.
+```
+
+## Step 6 — Restore + final report
+
+If pre-existing changes were stashed in Step 1: `git stash pop --index` (best-effort — surface conflicts but don't fail the run).
+
+Append final state to progress file (each line a separate `echo >> file`):
+
+```
+completed: <ISO>
+review phase 1 iterations: <N>
+review phase 3 iterations: <N>
+fixes-applied: <total>
+false-positives: <total>
+known-limitations: <total>
+```
+
+Print a tight summary to the user:
+
+```
+✓ applied:           N
+✗ false positives:   K
+⚠ known limitations: U
+
+review phase 1 (comprehensive): clean | <N> rounds → fixed | max-iter-hit
+review phase 2 (smells):        clean | fixed
+review phase 3 (codex):         clean | minor-only-exit (iter N) | max-iter-hit | skipped
+review phase 4 (critical only): clean | fixed
+
+pre-review SHA: <sha>
+progress:       /tmp/ralphex-progress-<branch>.txt
+```
+
+Any `⚠` → don't say "ready to PR".
+
+## Key rules
+
+- Each subagent gets a fresh context — orchestrator never reads code, never runs tests, never verifies findings.
+- Pass the FULL unedited findings list to the fixer — do NOT summarize, filter, or dismiss in the orchestrator.
+- All `subagent_type` values are `general-purpose` — the prompt provides the specialization.
+- Review agents (review phases 1, 2, 4): `run_in_background: false` (or omit) — they parallelize via single-message dispatch and the parent turn blocks until all return.
+- Codex (review phase 3): `run_in_background: true` — frees the orchestrator turn during the 2-5 min run; harness fires a completion notification.
+- Severity tags are load-bearing — they drive the codex minor-only exit. Don't skip them.
+- All progress-file appends use single-command `echo >> file` (no `&&`/`;`/`|` chains, no heredocs in compounds).
+- Fully automatic — no AskUserQuestion calls between phases. The pipeline runs end-to-end.
