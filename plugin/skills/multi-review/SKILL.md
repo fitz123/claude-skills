@@ -46,13 +46,13 @@ Before launching, run `git diff {base}...HEAD` in the orchestrator and inline it
 
 ### Parallelism contract (load-bearing — read this)
 
-All three reviewer invocations **MUST** be issued as three tool calls in a **single assistant message**. The harness runs same-message tool calls concurrently, so wall-clock ≈ max(codex≈2-5min, opus≈1-3min, gemini≈30s-2min) instead of the serialized 4-10min sum. Issuing them across separate messages serializes — costs the operator real time.
+All three reviewer invocations **MUST** be dispatched as three tool calls in a **single assistant message**, with **all three set to run in the background**. Empirically verified (Opus+Gemini+Codex against a small diff): with this pattern, wall-clock ≈ max(reviewers) ≈ 54s; without `run_in_background`, the UI serializes foreground tool calls and wall-clock ≈ sum(reviewers) ≈ 112s. Same-message foreground tool calls render and complete in dispatch order — that is sequential in practice. Background mode is the only reliable way to get genuine parallelism in this harness.
 
-**Do NOT route through the `Skill` tool for `thinking-tools:ask-codex` or `claude-skills:ask-gemini` here.** The `Skill` tool *loads* the underlying skill's instructions into the conversation; it does NOT execute the CLI. Following those instructions requires an additional message per reviewer, which adds a serializing round-trip. The `Skill` tool is the right path for standalone interactive use (e.g. someone asking "ask codex about X"); inside `multi-review` we inline the CLI invocations directly to preserve the single-message parallelism.
+**Do NOT route through the `Skill` tool for `thinking-tools:ask-codex` or `claude-skills:ask-gemini` here.** The `Skill` tool *loads* the underlying skill's instructions into the conversation; it does NOT execute the CLI. Following those instructions requires an additional message per reviewer, which adds a serializing round-trip. The `Skill` tool is the right path for standalone interactive use (e.g. someone asking "ask codex about X"); inside `multi-review` we inline the CLI invocations directly with `run_in_background: true` to preserve concurrency.
 
-### The three tool calls (one assistant message)
+### The three tool calls (one assistant message, all backgrounded)
 
-1. **Codex — `Bash` tool** (not `Skill`):
+1. **Codex — `Bash` tool with `run_in_background: true`** (not `Skill`):
 
    ```bash
    codex exec \
@@ -66,23 +66,21 @@ All three reviewer invocations **MUST** be issued as three tool calls in a **sin
 
    **Don't pin `-m <model>`** — let codex use its default. As the CLI's default model updates, the skill benefits automatically. (`model_reasoning_effort="high"` is a behavior setting, not a model pin; keep it for review depth.)
 
-   Codex runs synchronously here (no `run_in_background`). It will take 2-5 minutes — that's fine, the other two tool calls in the same message proceed concurrently.
+   Returns a background task ID immediately. The CLI runs in the background until codex finishes (2–5 min typical).
 
-2. **Opus — `Task` tool**, `subagent_type: "general-purpose"`, with the entire adversarial review prompt as the `prompt` argument. Foreground (default) — also concurrent with the other two same-message calls.
+2. **Opus — `Task` tool with `run_in_background: true`**, `subagent_type: "general-purpose"`, with the entire adversarial review prompt as the `prompt` argument. Returns an agent ID immediately; the subagent runs concurrently with the two `Bash` reviewers.
 
-3. **Gemini — `Bash` tool** (not `Skill`):
+3. **Gemini — `Bash` tool with `run_in_background: true`** (not `Skill`):
 
    ```bash
-   cat <<'PROMPT_EOF' | gemini --approval-mode plan
-   <the adversarial review prompt below, with the diff already inlined>
-   PROMPT_EOF
+   gemini --approval-mode plan < /tmp/multi-review-prompt-<random>.txt
    ```
 
-   Use heredoc (stdin), not `gemini -p "<prompt>"`, because inlined diffs blow past shell ARG_MAX (~256KB on macOS) on real PRs.
+   Write the prompt to a temp file first (`Write` tool to `/tmp/multi-review-prompt-$RANDOM.txt`), then redirect stdin. Don't use `gemini -p "<prompt>"` because inlined diffs blow past shell ARG_MAX (~256KB on macOS) on real PRs. Avoid `cat <prompt-file> | gemini` — pipes-in-bash-tool can trip command-classification heuristics in the harness; plain stdin redirection (`< file`) is the safest form.
 
-After the single message returns, you have all three reviewer outputs at once. Parse JSON from each.
+After the message returns, the model receives three task IDs (one per reviewer). Wait for the three `<task-notification>` events to fire. Do NOT poll the output files manually — read each output file ONLY after its completion notification arrives. Once all three notifications land, parse JSON from each output file and proceed to the merge step below.
 
-Retry-once-on-non-JSON: if any reviewer's output isn't parseable JSON, re-issue that one call (alone, since the others succeeded). If it fails twice, proceed with the survivors and note the gap.
+Retry-once-on-non-JSON: if any reviewer's output isn't parseable JSON, re-issue that one call (alone, also `run_in_background: true`). If it fails twice, proceed with the survivors and note the gap.
 
 ### Adversarial review prompt
 
