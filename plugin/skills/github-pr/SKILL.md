@@ -11,7 +11,7 @@ allowed-tools:
 
 # github-pr — Copilot-aware PR review loop
 
-This skill exists because the Copilot review cycle has three non-obvious gotchas
+This skill exists because the Copilot review cycle has four non-obvious gotchas
 that silently waste minutes of polling each round if you miss them:
 
 1. **Copilot does NOT auto-re-review on every push.** The first review is
@@ -27,6 +27,14 @@ that silently waste minutes of polling each round if you miss them:
    not as a formal Review.** A watcher that only polls `reviews[]` waits
    forever. The poller in this skill watches BOTH `reviews[]` and Copilot
    comments since baseline.
+4. **A baseline-and-wait poller misses activity that's already there.** If the
+   user invokes the skill AFTER Copilot has already reviewed (very common when
+   Copilot auto-reviews on PR open and the user runs `/github-pr` a few minutes
+   later), the naive baseline includes that review and the loop waits for an
+   INCREMENTAL second one that never comes. The poller in this skill detects
+   pre-existing unaddressed Copilot activity at startup (unresolved threads
+   where Copilot was the last commenter, OR a review/comment newer than the
+   last push) and surfaces it immediately instead of entering the wait loop.
 
 Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
@@ -48,24 +56,35 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    ```
 4. **Poll for the next review + CI**. Run in background (`run_in_background: true`)
    so the agent can do other work; heartbeat lines confirm liveness. The
-   poller's first action is a pre-flight check on `requested_reviewers` —
-   if Copilot isn't pending, it invokes `request-copilot-rereview.sh`
-   itself, so step 3 is no longer required:
+   poller's startup sequence is:
+   (a) **Existing-activity short-circuit** — if Copilot already has unaddressed
+       findings on the PR (unresolved threads with Copilot as the last
+       commenter, OR a review/comment newer than the last push), the poller
+       skips baseline-and-wait and dumps the existing state immediately. This
+       is the path you hit when `/github-pr` is invoked after Copilot already
+       auto-reviewed on PR creation.
+   (b) **Pre-flight reviewer request** — if no existing activity and Copilot
+       isn't a pending `requested_reviewer`, the poller invokes
+       `request-copilot-rereview.sh` so step 3 is no longer required.
+   (c) **Baseline + poll** — only entered when the PR is genuinely waiting on
+       Copilot to act.
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
 5. **Triage** the new findings (severity + verify-against-code). Repeat from 1.
 
-### First PR-open invocation
+### Invocation timing matters
 
-For the very first poll right after `gh pr create`, the pre-flight in step 4
-covers two failure modes silently:
-- Copilot Code Review is enabled but the bot hasn't been auto-requested yet
-  (race during PR creation).
-- The repo doesn't auto-request Copilot on PR open (some org-level Copilot
-  settings disable this), and the user expected an automatic review.
-
-In both cases the poller forces a request before establishing baselines.
+- **After fresh `gh pr create` + a few-minute pause**: Copilot has likely
+  already reviewed. The startup short-circuit surfaces those findings
+  immediately. Don't wait.
+- **Immediately after pushing fixes**: short-circuit will see only stale
+  threads from BEFORE the push (their last comment is older than the new
+  HEAD commit, so the "fresh-review/comment newer than last push" signal
+  is false; and if you've called `resolve-all-threads.sh`, the unresolved
+  count is zero too). Pre-flight requests Copilot, then poll.
+- **Right after `gh pr create` with zero pause**: no Copilot activity yet,
+  pre-flight covers the race where the bot hasn't been auto-requested.
 
 ## Useful one-liners (no scripts needed)
 
