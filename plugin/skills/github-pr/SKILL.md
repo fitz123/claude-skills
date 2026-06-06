@@ -22,7 +22,9 @@ that silently waste minutes of polling each round if you miss them:
    `requested_reviewers`, no `review_requested` event fires, no review is
    queued. The `request-copilot-rereview.sh` script in this skill checks the
    timeline event count and falls back to `@copilot please re-review` comment
-   when REST silently no-ops.
+   when REST silently no-ops. The fallback comment is idempotent per PR head
+   for a short cooldown, so explicit re-request + poller pre-flight does not
+   spam duplicate `@copilot` comments.
 3. **Copilot replies to `@copilot` comments as a COMMENT (`copilot-swe-agent`),
    not as a formal Review.** A watcher that only polls `reviews[]` waits
    forever. The poller in this skill watches BOTH `reviews[]` and Copilot
@@ -42,7 +44,9 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
 3. **Re-request Copilot** — optional now, the poller does a pre-flight check
    and re-requests automatically if Copilot isn't a pending reviewer. Call
    this explicitly only when you want the re-request to happen before
-   starting the (potentially backgrounded) poller, for clarity in logs:
+   starting the (potentially backgrounded) poller, for clarity in logs. The
+   script skips a duplicate fallback comment if one already exists for the
+   current head within `COPILOT_REREVIEW_COOLDOWN_SECONDS` (default 1800):
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/request-copilot-rereview.sh <pr-number>
    ```
