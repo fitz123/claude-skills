@@ -46,11 +46,12 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/request-copilot-rereview.sh <pr-number>
    ```
-4. **Poll for the next review + CI**. Run in background (`run_in_background: true`)
+4. **Poll for the current-head review + CI**. Run in background (`run_in_background: true`)
    so the agent can do other work; heartbeat lines confirm liveness. The
-   poller's first action is a pre-flight check on `requested_reviewers` —
-   if Copilot isn't pending, it invokes `request-copilot-rereview.sh`
-   itself, so step 3 is no longer required:
+   poller first checks whether Copilot already reviewed the PR's current head
+   SHA; if yes, it treats that as success and only waits for CI. Only when
+   there is neither current-head Copilot activity nor a pending Copilot reviewer
+   does it invoke `request-copilot-rereview.sh`, so step 3 is no longer required:
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
@@ -59,13 +60,16 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
 ### First PR-open invocation
 
 For the very first poll right after `gh pr create`, the pre-flight in step 4
-covers two failure modes silently:
+covers three failure modes silently:
+- Copilot already reviewed the current head before the poller started; the
+  poller exits cleanly once CI is done instead of waiting for "one more" review.
 - Copilot Code Review is enabled but the bot hasn't been auto-requested yet
   (race during PR creation).
 - The repo doesn't auto-request Copilot on PR open (some org-level Copilot
   settings disable this), and the user expected an automatic review.
 
-In both cases the poller forces a request before establishing baselines.
+The poller requests Copilot only after ruling out an existing current-head
+Copilot review/comment.
 
 ## Useful one-liners (no scripts needed)
 
