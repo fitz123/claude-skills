@@ -5,6 +5,7 @@ argument-hint: "<question or prompt>"
 allowed-tools:
   - Bash(agy:*)
   - Read
+  - Write(/tmp/*)
   - Grep
   - Glob
 ---
@@ -89,19 +90,19 @@ agy --sandbox --print-timeout 10m -p "<prompt>"
 
 `--sandbox` enables terminal restrictions: the model can read files via its built-in tools but cannot write or run shell commands. This is the correct mode for review and investigation — confirm against `agy --help` if behavior diverges. **Never** pass `--dangerously-skip-permissions` (it auto-approves writes — the opposite of a read-only reviewer). `--print-timeout 10m` covers slow runs (default 5m).
 
-**`-p` takes the prompt as an argument, not stdin** (`agy -p < file` errors with `flag needs an argument`). For prompts that embed large diffs or multi-file context (approaching macOS `ARG_MAX` ~1MB), write the full prompt to a temp file and have `agy` read it instead of passing it as an argument:
+**`-p` takes the prompt as an argument, not stdin** (`agy -p < file` errors with `flag needs an argument`). For prompts that embed large diffs or multi-file context (approaching macOS `ARG_MAX` ~1MB), use the `Write` tool to save the full prompt to `/tmp/ask-gemini-prompt-<random>.txt` (the skill's `allowed-tools` grants `Write(/tmp/*)` for exactly this), then have `agy` read it instead of passing it as an argument:
 
 ```bash
 agy --sandbox --print-timeout 10m -p "Read the file /tmp/ask-gemini-prompt-<random>.txt in full and answer the request it contains. <one-line restatement of the ask>."
 ```
 
-This sidesteps both `ARG_MAX` and the harness's command-classification heuristics on `"$(cat …)"` substitutions.
+This sidesteps both `ARG_MAX` and the harness's command-classification heuristics on `"$(cat …)"` substitutions. (`Bash(agy:*)` alone can't create the file — that's why `Write` is in `allowed-tools`.)
 
 **Don't pin `--model`** — always use `agy`'s default. As Antigravity's defaults evolve, this skill picks up the upgrade automatically. JSON-strict callers (`multi-review`) absorb occasional default-model misses via their own retry-once-on-non-JSON policy.
 
 ### Step 5: Process Response
 
-`agy` prints language-server startup noise and `E…/I…/W…` log lines to stderr; the substantive answer is on stdout (in `run_in_background` mode the captured output file is clean). Parse the meaningful content out.
+`agy` sends its language-server startup noise and `E…/I…/W…` log lines to **stderr**; the substantive answer is on **stdout**. In `run_in_background` mode the captured output file is the clean stdout answer (stderr is captured separately) — empirically just the answer. Still, defensively parse the meaningful content out in case streams are ever merged.
 
 For **investigation/debug** responses (unstructured prose): present cleaned, formatted output and add your assessment.
 
@@ -113,7 +114,7 @@ For **strict-JSON** responses (when invoked by `multi-review` or any caller requ
 
 `multi-review` invokes the `agy` CLI directly so all three reviewers can be launched as same-message tool calls without an extra `Skill` round-trip. `ask-gemini` remains the standalone interactive wrapper for the same CLI and adversarial-review prompt shape, so callers outside `multi-review` can still reuse that contract when they want a focused Gemini-only pass.
 
-**Read-only tool constraint:** under `--sandbox`, `agy` can read files but cannot write or run shell commands. Still constrain the prompt's tool routing for adversarial review: "use ONLY read-only tools available to you (read-file / glob / grep); do NOT spawn other subagents, and do NOT edit, write, or commit." The `multi-review` prompt template includes this constraint by design — if you're calling `ask-gemini` from elsewhere with the adversarial JSON contract, include the same constraint.
+**Read-only tool constraint:** `--sandbox` is a terminal restriction (no shell/git execution) and `agy` reads files freely. Whether `--sandbox` also blocks write-capable tools at the tool layer is not verified here, so treat "no writes" as **prompt-enforced** rather than a hard guarantee. Always constrain the prompt's tool routing for adversarial review: "use ONLY read-only tools available to you (read-file / glob / grep); do NOT spawn other subagents, and do NOT edit, write, or commit." The `multi-review` prompt template includes this constraint by design — if you're calling `ask-gemini` from elsewhere with the adversarial JSON contract, include the same constraint.
 
 **Inline the diff (don't reference a shell command):** `agy` in `--sandbox` mode cannot run shell, so a prompt that says "Review `git diff base...HEAD`" fails — `agy` has no way to run git. The caller (e.g. `multi-review`'s orchestrator) must resolve the diff via shell first and inline it inside the prompt body (typically inside a `<diff>...</diff>` block) — or write the full prompt+diff to a temp file that `agy` reads. Codex and Opus tolerate either form; `agy` requires the inlined-diff (or file-read) form.
 
@@ -143,7 +144,7 @@ The merge/triage logic, JSON-retry policy, and gap-reporting all live in `multi-
 
 ## agy-specific gotchas
 
-- **Must run OUTSIDE Claude Code's Bash sandbox.** `agy` reads its OAuth token from the **macOS Keychain** (under `~/.gemini/`), and Claude Code's Bash sandbox blocks the `securityd` Mach lookup. A sandboxed `agy` fails with `error getting token source: You are not logged into Antigravity`. Fix: add `"agy:*"` to `sandbox.excludedCommands` in Claude Code settings (same as the existing `codex:*` entry) so `agy` runs unsandboxed and can reach the Keychain.
+- **Must run OUTSIDE Claude Code's Bash sandbox.** `agy` reads its OAuth token from the **macOS Keychain** (not a file; `~/.gemini/` holds only config, logs, and the installation id), and Claude Code's Bash sandbox blocks the `securityd` Mach lookup. A sandboxed `agy` fails with `error getting token source: You are not logged into Antigravity`. Fix: add `"agy:*"` to `sandbox.excludedCommands` in Claude Code settings (same as the existing `codex:*` entry) so `agy` runs unsandboxed and can reach the Keychain.
 - **Large-prompt handling**: `agy -p` takes the prompt as an argument (not stdin). For prompts approaching `ARG_MAX` (~1MB on macOS) — embedded diffs, multi-file context — write the prompt to a temp file and have `agy` read it (see Step 4).
 - **`--sandbox` semantics**: terminal-restricted, read-only — the model can read files via built-in tools but cannot write or execute shell. This is the parity replacement for the old `gemini --approval-mode plan`. **For this skill, `--sandbox` is the default.**
 - **Default model selection**: invoking `agy` without `--model` uses the CLI default — which evolves as Antigravity updates the CLI. This skill intentionally does NOT pin a model, so it picks up upgrades automatically. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses.
