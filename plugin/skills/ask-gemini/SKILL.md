@@ -1,9 +1,9 @@
 ---
 name: ask-gemini
-description: Consult Google Gemini for investigation, debugging, or code review. Use when user explicitly asks to "ask gemini", "check with gemini", or "gemini review". Good for second-opinion runs on diffs and quick adversarial reviews. Runs in read-only plan mode.
+description: Consult Google Gemini for investigation, debugging, or code review. Use when user explicitly asks to "ask gemini", "check with gemini", or "gemini review". Good for second-opinion runs on diffs and quick adversarial reviews. Runs in read-only sandbox mode.
 argument-hint: "<question or prompt>"
 allowed-tools:
-  - Bash(gemini:*)
+  - Bash(agy:*)
   - Read
   - Grep
   - Glob
@@ -11,7 +11,9 @@ allowed-tools:
 
 # Ask Gemini
 
-Consult Google Gemini as a second-opinion reviewer for investigation, debugging, or code review tasks. Gemini runs locally via the homebrew `gemini` CLI in read-only `plan` mode, so it can read project files but cannot write or execute. Use it standalone for a quick sanity-check on a hypothesis or a focused adversarial review.
+Consult Google Gemini as a second-opinion reviewer for investigation, debugging, or code review tasks. Gemini runs locally via the Antigravity `agy` CLI in read-only `--sandbox` mode, so it can read project files but cannot write or execute shell commands. Use it standalone for a quick sanity-check on a hypothesis or a focused adversarial review.
+
+> **`agy` is the replacement for the old `gemini` CLI.** Google discontinued the free "Gemini Code Assist for individuals" OAuth tier in the `gemini` CLI (it now errors with `IneligibleTierError` / "migrate to the Antigravity suite") and routes individuals to the Antigravity CLI. `agy` runs the same Gemini models. See the Authentication and Troubleshooting sections for setup.
 
 ## Activation Triggers
 
@@ -29,7 +31,7 @@ Consult Google Gemini as a second-opinion reviewer for investigation, debugging,
 
 ### Step 1: Check Availability
 
-Run `which gemini` to verify the CLI is installed. On macOS the typical path is `/opt/homebrew/bin/gemini`. If the command is not found, inform the user that the Gemini CLI is missing and stop — do not attempt to fall back to another model silently.
+Run `which agy` to verify the CLI is installed. On macOS the typical path is `/opt/homebrew/bin/agy` (installed via `brew install --cask antigravity-cli`). If the command is not found, inform the user that the Antigravity `agy` CLI is missing and stop — do not attempt to fall back to another model silently.
 
 ### Step 2: Build Context
 
@@ -40,11 +42,11 @@ Gather context from the current conversation:
 3. **What we tried** — approaches attempted and why they failed (if applicable)
 4. **Specific question** — what exactly Gemini should analyze or answer
 
-Cite file paths and line references rather than dumping entire files. Gemini has filesystem access in `plan` mode and can read what it needs.
+Cite file paths and line references rather than dumping entire files. `agy` has read-only filesystem access in `--sandbox` mode and can read what it needs.
 
 ### Step 3: Construct Prompt
 
-Build a focused prompt. Do NOT dump entire files — Gemini can read them itself via its filesystem tools in plan mode. Provide file paths and line references so it knows where to look.
+Build a focused prompt. Do NOT dump entire files — `agy` can read them itself via its read tools. Provide file paths and line references so it knows where to look.
 
 **Template for investigation/debug:**
 
@@ -75,46 +77,45 @@ Keep response focused and actionable.
 
 **Template for code review (adversarial):**
 
-When asked for an adversarial code review (or when invoked by `multi-review`), use the strict-JSON contract — see the "Use as multi-review reviewer" section below for the full prompt shape.
+When asked for an adversarial code review (or when invoked by `multi-review`), use the strict-JSON contract — see the "Use with multi-review's adversarial contract" section below for the full prompt shape.
 
-### Step 4: Invoke Gemini
+### Step 4: Invoke agy
 
-Primary invocation (read-only `plan` mode):
-
-```bash
-gemini -p "<prompt>" --approval-mode plan
-```
-
-`--approval-mode plan` is read-only: the model can read files via its built-in filesystem tools but cannot write or execute. This is the correct mode for review and investigation — confirm against `gemini --help` if behavior diverges.
-
-For prompts that approach macOS shell `ARG_MAX` (~256KB) — typically anything that embeds large diffs or multi-file context — pipe via stdin instead of `-p`:
+Primary invocation (read-only `--sandbox` mode):
 
 ```bash
-echo "<prompt>" | gemini --approval-mode plan
+agy --sandbox --print-timeout 10m -p "<prompt>"
 ```
 
-Optional flags:
-- `--output-format json` — structured CLI output wrapper; orthogonal to the prompt-level JSON contract. Usually not needed.
+`--sandbox` enables terminal restrictions: the model can read files via its built-in tools but cannot write or run shell commands. This is the correct mode for review and investigation — confirm against `agy --help` if behavior diverges. **Never** pass `--dangerously-skip-permissions` (it auto-approves writes — the opposite of a read-only reviewer). `--print-timeout 10m` covers slow runs (default 5m).
 
-**Don't pin `-m <model>`** — always use Gemini's default. As Gemini's defaults evolve, this skill picks up the upgrade automatically. JSON-strict callers (`multi-review`) absorb occasional default-model misses via their own retry-once-on-non-JSON policy.
+**`-p` takes the prompt as an argument, not stdin** (`agy -p < file` errors with `flag needs an argument`). For prompts that embed large diffs or multi-file context (approaching macOS `ARG_MAX` ~1MB), write the full prompt to a temp file and have `agy` read it instead of passing it as an argument:
+
+```bash
+agy --sandbox --print-timeout 10m -p "Read the file /tmp/ask-gemini-prompt-<random>.txt in full and answer the request it contains. <one-line restatement of the ask>."
+```
+
+This sidesteps both `ARG_MAX` and the harness's command-classification heuristics on `"$(cat …)"` substitutions.
+
+**Don't pin `--model`** — always use `agy`'s default. As Antigravity's defaults evolve, this skill picks up the upgrade automatically. JSON-strict callers (`multi-review`) absorb occasional default-model misses via their own retry-once-on-non-JSON policy.
 
 ### Step 5: Process Response
 
-Gemini's reply may include a brief preamble or interleaved tool-use lines before the substantive answer; parse the meaningful content out.
+`agy` prints language-server startup noise and `E…/I…/W…` log lines to stderr; the substantive answer is on stdout (in `run_in_background` mode the captured output file is clean). Parse the meaningful content out.
 
 For **investigation/debug** responses (unstructured prose): present cleaned, formatted output and add your assessment.
 
-For **strict-JSON** responses (when invoked by `multi-review` or any caller requesting the adversarial contract): expect raw JSON. If it arrives wrapped in a ```json fence or preceded by preamble, the caller (e.g. `multi-review`) handles the retry-once-on-non-JSON path; do not silently re-parse here. Surface what Gemini returned and let the caller decide whether to retry.
+For **strict-JSON** responses (when invoked by `multi-review` or any caller requesting the adversarial contract): expect raw JSON. If it arrives wrapped in a ```json fence or preceded by preamble, the caller (e.g. `multi-review`) handles the retry-once-on-non-JSON path; do not silently re-parse here. Surface what `agy` returned and let the caller decide whether to retry.
 
 **CRITICAL: After presenting findings, STOP. Do not apply fixes, do not touch files, do not start implementing suggestions. Gemini's output is input for discussion, not an automatic work order.**
 
 ## Use with multi-review's adversarial contract
 
-`multi-review` now invokes the `gemini` CLI directly so all three reviewers can be launched as same-message tool calls without an extra `Skill` round-trip. `ask-gemini` remains the standalone interactive wrapper for the same CLI and adversarial-review prompt shape, so callers outside `multi-review` can still reuse that contract when they want a focused Gemini-only pass.
+`multi-review` invokes the `agy` CLI directly so all three reviewers can be launched as same-message tool calls without an extra `Skill` round-trip. `ask-gemini` remains the standalone interactive wrapper for the same CLI and adversarial-review prompt shape, so callers outside `multi-review` can still reuse that contract when they want a focused Gemini-only pass.
 
-**Plan-mode subagent constraint (important):** `--approval-mode plan` allows only a fixed set of tools — read-only filesystem access (`read_file`, `glob`, `grep_search`) plus two default-allowed subagents (`codebase_investigator`, `cli_help`). Any OTHER subagent the model tries to route through (`invoke_agent <name>`) is denied by the policy engine and the run aborts. The caller's prompt **must** constrain Gemini's tool routing accordingly: e.g. "use ONLY the `codebase_investigator` subagent or direct read tools; do NOT invoke other subagents." The `multi-review` prompt template includes this constraint by design — if you're calling `ask-gemini` from elsewhere with the adversarial JSON contract, include the same constraint.
+**Read-only tool constraint:** under `--sandbox`, `agy` can read files but cannot write or run shell commands. Still constrain the prompt's tool routing for adversarial review: "use ONLY read-only tools available to you (read-file / glob / grep); do NOT spawn other subagents, and do NOT edit, write, or commit." The `multi-review` prompt template includes this constraint by design — if you're calling `ask-gemini` from elsewhere with the adversarial JSON contract, include the same constraint.
 
-**Inline the diff (don't reference a shell command):** Gemini in plan mode cannot execute shell commands, so a prompt that says "Review `git diff base...HEAD`" fails — Gemini has no way to see the diff. The caller (e.g. `multi-review`'s orchestrator) must resolve the diff via shell first and inline it inside the prompt body (typically inside a `<diff>...</diff>` block). Codex and Opus tolerate either form; Gemini requires the inline form.
+**Inline the diff (don't reference a shell command):** `agy` in `--sandbox` mode cannot run shell, so a prompt that says "Review `git diff base...HEAD`" fails — `agy` has no way to run git. The caller (e.g. `multi-review`'s orchestrator) must resolve the diff via shell first and inline it inside the prompt body (typically inside a `<diff>...</diff>` block) — or write the full prompt+diff to a temp file that `agy` reads. Codex and Opus tolerate either form; `agy` requires the inlined-diff (or file-read) form.
 
 The contract requires **strict JSON** with this shape:
 
@@ -140,17 +141,17 @@ The contract requires **strict JSON** with this shape:
 
 The merge/triage logic, JSON-retry policy, and gap-reporting all live in `multi-review`; `ask-gemini` is intentionally thin.
 
-## Gemini-specific gotchas
+## agy-specific gotchas
 
-- **Large-prompt handling**: prefer stdin (`echo "<prompt>" | gemini --approval-mode plan`) over `-p "<prompt>"` for prompts approaching shell `ARG_MAX` (~256KB on macOS). Embedded diffs and multi-file context blow past this threshold quickly.
-- **`--approval-mode plan` semantics**: plan mode is read-only filesystem (no write, no execute) AND restricts subagent invocations to a fixed allowlist (`codebase_investigator`, `cli_help`). The model can still read files via built-in tools. The full mode set is `default | auto_edit | yolo | plan`. Plan is the documented headless mode for code review; in non-interactive runs, `default` also works fine because Gemini's policy engine treats `ask_user` as `deny` when there's no TTY. `yolo` works too but lifts all safety nets. **For this skill, `plan` is the default** — but be aware of the subagent allowlist constraint above.
-- **Authentication**: Gemini CLI checks `GEMINI_API_KEY` env var **or** `gcloud auth application-default login` (whichever the homebrew build wires up first). Document both paths and let the user pick — neither is privileged in this skill.
-- **Default model selection**: invoking `gemini` without `-m` uses the CLI default — which evolves over time as Google updates the CLI. This skill intentionally does NOT pin a model, so it picks up upgrades automatically. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses.
+- **Must run OUTSIDE Claude Code's Bash sandbox.** `agy` reads its OAuth token from the **macOS Keychain** (under `~/.gemini/`), and Claude Code's Bash sandbox blocks the `securityd` Mach lookup. A sandboxed `agy` fails with `error getting token source: You are not logged into Antigravity`. Fix: add `"agy:*"` to `sandbox.excludedCommands` in Claude Code settings (same as the existing `codex:*` entry) so `agy` runs unsandboxed and can reach the Keychain.
+- **Large-prompt handling**: `agy -p` takes the prompt as an argument (not stdin). For prompts approaching `ARG_MAX` (~1MB on macOS) — embedded diffs, multi-file context — write the prompt to a temp file and have `agy` read it (see Step 4).
+- **`--sandbox` semantics**: terminal-restricted, read-only — the model can read files via built-in tools but cannot write or execute shell. This is the parity replacement for the old `gemini --approval-mode plan`. **For this skill, `--sandbox` is the default.**
+- **Default model selection**: invoking `agy` without `--model` uses the CLI default — which evolves as Antigravity updates the CLI. This skill intentionally does NOT pin a model, so it picks up upgrades automatically. The retry-once-on-non-JSON policy in `multi-review` absorbs occasional default-model misses.
 
 ## Important Rules
 
-- **Read-only always** — Gemini analyzes, we implement. Default invocation uses `--approval-mode plan`; switching modes requires explicit prompt-level constraints and a justification (e.g. needing to invoke a subagent outside plan-mode's allowlist).
-- **Don't duplicate files** — Gemini has filesystem access in plan mode. Provide paths, not content.
+- **Read-only always** — Gemini analyzes, we implement. Default invocation uses `--sandbox`; never use `--dangerously-skip-permissions`.
+- **Don't duplicate files** — `agy` has read-only filesystem access. Provide paths, not content.
 - **Focused prompts** — specific questions get better answers than broad "review everything".
 - **One question at a time** — if multiple concerns, run separate Gemini queries.
 - **Critical thinking** — Gemini can be wrong. Evaluate its suggestions before implementing.
@@ -163,7 +164,8 @@ The merge/triage logic, JSON-retry policy, and gap-reporting all live in `multi-
 
 ## Troubleshooting
 
-- **Gemini not found**: `which gemini` — install via `brew install gemini-cli` (or the project's documented install path).
-- **Authentication errors**: set `GEMINI_API_KEY` env var, or run `gcloud auth application-default login`. Check `gemini --help` for the CLI's auth subcommand if it has one.
-- **Empty/garbled output**: re-run with stdin instead of `-p` (prompt may have hit `ARG_MAX`).
-- **Non-JSON when JSON was required**: caller handles retry; if it persists, tighten the prompt's output contract. (Don't reach for `-m <model>` to "fix" reliability — keep the skill default-model-driven so CLI upgrades carry through.)
+- **agy not found**: `which agy` — install via `brew install --cask antigravity-cli` (links the `antigravity` binary to `agy`). The separate `antigravity` cask is the GUI IDE and is NOT required for this skill.
+- **`You are not logged into Antigravity`**: either (a) you haven't logged the CLI in — run bare `agy` once in a normal (non-sandboxed) shell and complete Google Sign-In; or (b) `agy` is running inside Claude Code's Bash sandbox, which can't read the Keychain — add `"agy:*"` to `sandbox.excludedCommands` (see gotchas above).
+- **`IneligibleTierError` / "migrate to the Antigravity suite"**: that's the old `gemini` CLI's dead individuals tier. Use `agy`, not `gemini`.
+- **Empty/garbled output**: the answer is on stdout; `agy`'s log noise is on stderr. If the prompt was huge, switch to the file-read form (Step 4) — `-p` may have hit `ARG_MAX`.
+- **Non-JSON when JSON was required**: caller handles retry; if it persists, tighten the prompt's output contract. (Don't reach for `--model` to "fix" reliability — keep the skill default-model-driven so CLI upgrades carry through.)
