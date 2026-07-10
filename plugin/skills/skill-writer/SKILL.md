@@ -10,7 +10,7 @@ allowed-tools:
 
 # Skill Writer
 
-**Last updated**: 2026-02-18
+**Last updated**: 2026-07-10
 
 Creates Claude Code skills following the [official docs](https://code.claude.com/docs/en/skills) and [Agent Skills spec](https://agentskills.io/specification).
 
@@ -39,20 +39,26 @@ allowed-tools:                  # optional
 ---
 ```
 
-All fields optional. Only `description` is recommended.
+For portable Agent Skills, include both `name` and `description`; Claude Code can infer a missing name from the directory, but the open standard requires both.
 
 | Field | Purpose |
 |-------|---------|
-| `name` | Display name. Defaults to directory name. Lowercase + hyphens, max 64 chars. **Must match parent directory.** |
+| `name` | Display name. Defaults to directory name in Claude Code. Lowercase + hyphens, max 64 chars. **Must match parent directory.** |
 | `description` | WHAT it does + WHEN to use it. Max 1024 chars. Third person ("Processes files", not "I process"). |
+| `when_to_use` | Additional trigger context appended to the description; combined listing text is capped. |
 | `argument-hint` | Autocomplete hint, e.g. `[issue-number]` or `[filename] [format]` |
+| `arguments` | Names for positional arguments used through `$name` substitutions. |
 | `disable-model-invocation` | `true` = only user can invoke via `/name`. Use for side-effect workflows. |
 | `user-invocable` | `false` = hidden from `/` menu. Use for background knowledge Claude loads automatically. |
 | `allowed-tools` | Tools Claude can use without permission prompts when skill is active. |
+| `disallowed-tools` | Tools removed while the skill is active; clears on the next user message. |
 | `model` | Model override when skill is active. |
+| `effort` | Per-turn effort override (`low` through `max`, model-dependent). |
 | `context` | `fork` = run in isolated subagent (no conversation history). |
 | `agent` | Subagent type when `context: fork`. Options: `Explore`, `Plan`, `general-purpose`, or custom agent name. |
 | `hooks` | Lifecycle hooks scoped to this skill. Same format as settings hooks. |
+| `paths` | Glob patterns limiting automatic activation to matching files. |
+| `shell` | Shell for dynamic context commands: `bash` or `powershell`. |
 
 ### Invocation Control
 
