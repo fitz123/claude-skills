@@ -119,6 +119,7 @@ fake_gh() {
                         normal_review|partial_timeline_error) review_after=1 ;;
                         stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
                         in_flight_marker|in_flight_rest) review_after=3 ;;
+                        timeline_refresh_error) review_after=4 ;;
                     esac
                     if [ "$review_after" -gt 0 ] && [ "$review_call" -gt "$review_after" ]; then
                         emit_json "[{\"user\":{\"login\":\"copilot-pull-request-reviewer[bot]\"},\"commit_id\":\"$head_sha\"}]"
@@ -141,8 +142,12 @@ fake_gh() {
                             return 1
                             ;;
                         timeline_refresh_error)
-                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
-                            if [ "$timeline_call" -gt 1 ]; then
+                            if [ "$timeline_call" -eq 1 ]; then
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            else
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"},{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:01:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}}]"
+                            fi
+                            if [ "$timeline_call" -gt 1 ] && [ "$timeline_call" -lt 4 ]; then
                                 return 1
                             fi
                             ;;
@@ -272,10 +277,12 @@ printf '%s\n' 'ok - partial timeline failure cannot create terminal evidence'
 output=$(run_case timeline_refresh_error)
 assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'timeline refresh error initial state'
 assert_contains "$output" 'preserving the last known fallback state' 'timeline refresh error retention'
-assert_contains "$output" 'iter=2' 'timeline refresh error preserves CI gating'
-assert_contains "$output" 'CI done + Copilot terminal failure observed' 'timeline refresh error completion'
-assert_not_contains "$output" 'newer Copilot trigger superseded the prior terminal failure' 'timeline refresh error does not clear state'
-printf '%s\n' 'ok - timeline refresh failure preserves terminal evidence'
+assert_contains "$output" 'checks_done=true activity_seen=no terminal_failure_seen=yes fallback_state_fresh=no' 'timeline refresh error rejects stale terminal evidence'
+assert_contains "$output" 'newer Copilot trigger superseded the prior terminal failure' 'timeline refresh error observes hidden superseding request after recovery'
+assert_contains "$output" 'iter=4' 'timeline refresh error keeps polling for activity'
+assert_contains "$output" 'CI done + Copilot activity observed' 'timeline refresh error normal completion'
+assert_not_contains "$output" 'CI done + Copilot terminal failure observed' 'timeline refresh error cannot exit from stale terminal evidence'
+printf '%s\n' 'ok - timeline refresh failure cannot act on stale terminal evidence'
 
 output=$(run_case stale_failure)
 assert_contains "$output" 'new_review=yes' 'stale failure normal review'

@@ -194,6 +194,7 @@ iter=0
 while [ $SECONDS -lt $deadline ]; do
     iter=$((iter + 1))
     elapsed=$SECONDS
+    fallback_state_fresh="no"
 
     checks_done=$(checks_complete)
     cur_reviews=$(current_head_reviews)
@@ -207,6 +208,7 @@ while [ $SECONDS -lt $deadline ]; do
 
     if [ "$activity_seen" = "no" ]; then
         if fallback_state=$(current_head_fallback_state); then
+            fallback_state_fresh="yes"
             previous_fallback_request_id="$fallback_request_id"
             previous_terminal_failure_seen="$terminal_failure_seen"
             IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
@@ -224,15 +226,15 @@ while [ $SECONDS -lt $deadline ]; do
         fi
     fi
 
-    printf '[poll] iter=%d t=%ds checks_done=%s activity_seen=%s terminal_failure_seen=%s new_review=%s new_comment=%s (head_reviews %s→%s comments_since_head %s→%s)\n' \
-        "$iter" "$elapsed" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$new_review" "$new_comment" \
+    printf '[poll] iter=%d t=%ds checks_done=%s activity_seen=%s terminal_failure_seen=%s fallback_state_fresh=%s new_review=%s new_comment=%s (head_reviews %s→%s comments_since_head %s→%s)\n' \
+        "$iter" "$elapsed" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$fallback_state_fresh" "$new_review" "$new_comment" \
         "$start_reviews" "$cur_reviews" "$start_comments" "$cur_comments"
 
     if [ "$checks_done" = "true" ] && [ "$activity_seen" = "yes" ]; then
         echo "[poll] CI done + Copilot activity observed — exiting loop"
         break
     fi
-    if [ "$checks_done" = "true" ] && [ "$terminal_failure_seen" = "yes" ]; then
+    if [ "$checks_done" = "true" ] && [ "$terminal_failure_seen" = "yes" ] && [ "$fallback_state_fresh" = "yes" ]; then
         echo "[poll] CI done + Copilot terminal failure observed — exiting loop"
         break
     fi
