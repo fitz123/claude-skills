@@ -60,11 +60,18 @@ fake_gh() {
                     if [[ " $* " == *" --json completedAt "* ]]; then
                         local check_call
                         check_call=$(next_call checks)
-                        if [ "$TEST_SCENARIO" = "correlated_failure" ] && [ "$check_call" -lt 3 ]; then
-                            emit_json '[{"completedAt":null}]'
-                        else
-                            emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
-                        fi
+                        case "$TEST_SCENARIO" in
+                            correlated_failure|in_flight_marker|in_flight_rest)
+                                if [ "$check_call" -lt 3 ]; then
+                                    emit_json '[{"completedAt":null}]'
+                                else
+                                    emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
+                                fi
+                                ;;
+                            *)
+                                emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
+                                ;;
+                        esac
                     else
                         printf '%s\n' 'ci  pass  10s'
                     fi
@@ -110,7 +117,8 @@ fake_gh() {
                     local review_after=0
                     case "$TEST_SCENARIO" in
                         normal_review) review_after=1 ;;
-                        stale_failure|same_head_retry|superseded_rest) review_after=2 ;;
+                        stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
+                        in_flight_marker|in_flight_rest) review_after=3 ;;
                     esac
                     if [ "$review_after" -gt 0 ] && [ "$review_call" -gt "$review_after" ]; then
                         emit_json "[{\"user\":{\"login\":\"copilot-pull-request-reviewer[bot]\"},\"commit_id\":\"$head_sha\"}]"
@@ -121,50 +129,51 @@ fake_gh() {
                 repos/example/widgets/pulls/42/requested_reviewers)
                     emit_json '{"users":[{"login":"copilot-pull-request-reviewer"}]}'
                     ;;
-                'repos/example/widgets/issues/42/comments?per_page=100')
+                'repos/example/widgets/issues/42/timeline?per_page=100')
+                    local timeline_call
+                    timeline_call=$(next_call timeline)
                     case "$TEST_SCENARIO" in
                         correlated_failure)
-                            emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"@copilot please re-review\\n\\n$current_marker\"}]"
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
                             ;;
                         stale_failure)
-                            emit_json "[{\"created_at\":\"2026-07-14T09:00:00Z\",\"body\":\"<!-- github-pr-rereview-head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\"},{\"created_at\":\"2026-07-14T10:05:00Z\",\"body\":\"$current_marker\"}]"
+                            emit_json "[{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:00Z\"},{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:05:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"}]"
                             ;;
                         delayed_marker)
-                            local fallback_comment_call
-                            fallback_comment_call=$(next_call fallback_comments)
-                            if [ "$fallback_comment_call" -eq 1 ]; then
+                            if [ "$timeline_call" -eq 1 ]; then
                                 emit_json '[]'
                             else
-                                emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"}]"
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
                             fi
                             ;;
                         same_head_retry)
-                            emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"},{\"created_at\":\"2026-07-14T10:05:00Z\",\"body\":\"$current_marker\"}]"
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:02:00Z\"},{\"event\":\"commented\",\"id\":101,\"created_at\":\"2026-07-14T10:05:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"}]"
                             ;;
                         superseded_rest)
-                            emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"}]"
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:01:00Z\"},{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:02:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}}]"
                             ;;
-                        *)
-                            emit_json '[]'
+                        same_second_failure)
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:00Z\"}]"
                             ;;
-                    esac
-                    ;;
-                'repos/example/widgets/issues/42/timeline?per_page=100')
-                    case "$TEST_SCENARIO" in
-                        correlated_failure)
-                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:00:05Z"}]'
+                        same_second_superseded)
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:00Z\"},{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:00:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}}]"
                             ;;
-                        stale_failure)
-                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:00:00Z"}]'
+                        unrelated_trigger)
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"commented\",\"id\":101,\"created_at\":\"2026-07-14T10:01:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot implement the requested change\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:01:05Z\"}]"
                             ;;
-                        delayed_marker)
-                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:00:05Z"}]'
+                        in_flight_marker)
+                            if [ "$timeline_call" -lt 3 ]; then
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            else
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"},{\"event\":\"commented\",\"id\":101,\"created_at\":\"2026-07-14T10:01:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"}]"
+                            fi
                             ;;
-                        same_head_retry)
-                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:02:00Z"}]'
-                            ;;
-                        superseded_rest)
-                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:01:00Z"},{"event":"review_requested","created_at":"2026-07-14T10:02:00Z","requested_reviewer":{"login":"Copilot"}}]'
+                        in_flight_rest)
+                            if [ "$timeline_call" -lt 3 ]; then
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            else
+                                emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"},{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:01:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}}]"
+                            fi
                             ;;
                         *)
                             emit_json '[]'
@@ -252,7 +261,7 @@ printf '%s\n' 'ok - failure before current-head marker is rejected'
 
 output=$(run_case delayed_marker)
 assert_contains "$output" 'fallback_request_at=none' 'delayed marker initial lookup'
-assert_contains "$output" 'fallback marker became visible at 2026-07-14T10:00:00Z' 'delayed marker retry'
+assert_contains "$output" 'newest current-head fallback marker became visible at 2026-07-14T10:00:00Z' 'delayed marker retry'
 assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'delayed marker failure'
 assert_contains "$output" 'CI done + Copilot terminal failure observed' 'delayed marker completion'
 printf '%s\n' 'ok - delayed fallback marker discovery is retried'
@@ -270,6 +279,38 @@ assert_contains "$output" 'iter=2' 'superseding REST request keeps polling'
 assert_contains "$output" 'CI done + Copilot activity observed' 'superseding REST request normal completion'
 assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'superseding REST request rejection'
 printf '%s\n' 'ok - newer REST request supersedes old fallback failure'
+
+output=$(run_case same_second_failure)
+assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'same-second failure'
+assert_contains "$output" 'CI done + Copilot terminal failure observed' 'same-second failure completion'
+printf '%s\n' 'ok - same-second terminal failure follows marker by timeline order'
+
+output=$(run_case same_second_superseded)
+assert_contains "$output" 'new_review=yes' 'same-second supersession normal review'
+assert_contains "$output" 'CI done + Copilot activity observed' 'same-second supersession completion'
+assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'same-second supersession rejection'
+printf '%s\n' 'ok - same-second newer REST request supersedes fallback failure'
+
+output=$(run_case unrelated_trigger)
+assert_contains "$output" 'new_review=yes' 'unrelated trigger normal review'
+assert_contains "$output" 'CI done + Copilot activity observed' 'unrelated trigger completion'
+assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'unrelated trigger rejection'
+printf '%s\n' 'ok - unrelated later Copilot trigger rejects generic failure'
+
+output=$(run_case in_flight_marker)
+assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'in-flight marker initial failure'
+assert_contains "$output" 'newest current-head fallback marker became visible at 2026-07-14T10:01:00Z' 'in-flight marker refresh'
+assert_contains "$output" 'newer Copilot trigger superseded the prior terminal failure' 'in-flight marker resets failure'
+assert_contains "$output" 'iter=3' 'in-flight marker keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'in-flight marker completion'
+printf '%s\n' 'ok - in-flight fallback retry clears latched terminal failure'
+
+output=$(run_case in_flight_rest)
+assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'in-flight REST initial failure'
+assert_contains "$output" 'newer Copilot trigger superseded the prior terminal failure' 'in-flight REST resets failure'
+assert_contains "$output" 'iter=3' 'in-flight REST keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'in-flight REST completion'
+printf '%s\n' 'ok - in-flight REST request clears latched terminal failure'
 
 output=$(run_case normal_review)
 assert_contains "$output" 'new_review=yes' 'normal review'

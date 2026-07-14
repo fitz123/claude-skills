@@ -15,9 +15,9 @@
 # Why a terminal fallback failure also completes the Copilot wait: GitHub can
 # accept the fallback comment, start Copilot Agent, and then record a generic
 # `copilot_work_finished_failure` timeline event without posting a review or
-# comment. Correlating that event to the current head's marked request, unless
-# a newer Copilot request supersedes it, lets the poller stop waiting for review
-# activity while still requiring CI to finish.
+# comment. Correlating that event by timeline order to the current head's marked
+# request, unless a newer Copilot trigger supersedes it, lets the poller stop
+# waiting for review activity while still requiring CI to finish.
 #
 # Usage:
 #   poll-pr-review.sh <pr-number> [timeout-seconds]
@@ -72,38 +72,55 @@ copilot_comments_since_head() {
         2>/dev/null || echo 0
 }
 
-current_head_fallback_requested_at() {
-    # request-copilot-rereview.sh includes this head-specific marker in its
-    # fallback comment. Select the newest matching request in case a caller
-    # deliberately retried after the idempotency cooldown.
+current_head_fallback_state() {
+    # Evaluate the timeline as an ordered stream instead of comparing GitHub's
+    # second-resolution timestamps. This keeps an immediate failure visible and
+    # lets a newer fallback, REST request, or unrelated @copilot trigger
+    # supersede an older failure while the poller is still running.
     local request_marker="<!-- github-pr-rereview-head:$head_sha -->"
-    gh api "repos/$repo/issues/$pr/comments?per_page=100" --paginate 2>/dev/null | \
-        jq -sr --arg marker "$request_marker" \
-            '[.[][]? | select(((.body // "") | contains($marker))) | .created_at] | max // ""' \
-            2>/dev/null || echo ""
-}
-
-copilot_terminal_failures_after() {
-    local request_at="$1"
-    if [ -z "$request_at" ]; then
-        echo 0
-        return
-    fi
     gh api "repos/$repo/issues/$pr/timeline?per_page=100" \
         -H "Accept: application/vnd.github+json" --paginate 2>/dev/null | \
-        jq -sr --arg request_at "$request_at" \
-            'def is_copilot_review_request:
+        jq -sr --arg marker "$request_marker" \
+            'def event_login:
+                ((.user.login // .actor.login // "") | ascii_downcase);
+             def is_copilot_actor:
+                event_login as $login |
+                ($login == "copilot" or
+                 ($login | startswith("copilot-")) or
+                 ($login | startswith("github-copilot")));
+             def is_marked_fallback:
+                (.event == "commented") and
+                (is_copilot_actor | not) and
+                (((.body // "") | startswith("@copilot please re-review"))) and
+                (((.body // "") | contains($marker)));
+             def is_copilot_review_request:
                 (.event == "review_requested") and
                 (((.requested_reviewer.login // "") | ascii_downcase) as $login |
                     ($login == "copilot" or
                      $login == "copilot-pull-request-reviewer" or
                      $login == "copilot-pull-request-reviewer[bot]"));
+             def is_copilot_trigger_comment:
+                (.event == "commented") and
+                (is_copilot_actor | not) and
+                (((.body // "") | test("@copilot"; "i")));
              [.[][]?] as $events |
-             if any($events[]; is_copilot_review_request and (.created_at // "") > $request_at)
-             then 0
-             else [$events[] | select(.event == "copilot_work_finished_failure" and (.created_at // "") > $request_at)] | length
+             ([$events | to_entries[] | select(.value | is_marked_fallback)] | last) as $request |
+             if $request == null then
+                ["none", "none", "no"] | @tsv
+             else
+                [$events | to_entries[] | select(.key > $request.key) | .value] as $after |
+                [
+                    (($request.value.id // $request.value.node_id // $request.key) | tostring),
+                    ($request.value.created_at // "unknown"),
+                    (if any($after[]; is_copilot_review_request or is_copilot_trigger_comment)
+                     then "no"
+                     elif any($after[]; .event == "copilot_work_finished_failure")
+                     then "yes"
+                     else "no"
+                     end)
+                ] | @tsv
              end' \
-            2>/dev/null || echo 0
+            2>/dev/null || printf 'none\tnone\tno\n'
 }
 
 print_final_state() {
@@ -154,10 +171,14 @@ else
     echo "[poll] Copilot already pending as reviewer — skipping pre-flight request"
 fi
 
-fallback_request_at=$(current_head_fallback_requested_at)
-terminal_failure_seen="no"
+fallback_state=$(current_head_fallback_state)
+IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
 
-echo "[poll] repo=$repo pr=#$pr head=$head_sha baseline: current_head_reviews=$start_reviews copilot_comments_since_head=$start_comments activity_seen=$activity_seen fallback_request_at=${fallback_request_at:-none} budget=${budget}s"
+if [ "$terminal_failure_seen" = "yes" ]; then
+    echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+fi
+
+echo "[poll] repo=$repo pr=#$pr head=$head_sha baseline: current_head_reviews=$start_reviews copilot_comments_since_head=$start_comments activity_seen=$activity_seen fallback_request_at=$fallback_request_at budget=${budget}s"
 
 deadline=$((SECONDS + budget))
 iter=0
@@ -175,20 +196,19 @@ while [ $SECONDS -lt $deadline ]; do
         activity_seen="yes"
     fi
 
-    if [ "$activity_seen" = "no" ] && [ "$terminal_failure_seen" = "no" ]; then
-        if [ -z "$fallback_request_at" ]; then
-            fallback_request_at=$(current_head_fallback_requested_at)
-            if [ -n "$fallback_request_at" ]; then
-                echo "[poll] current-head fallback marker became visible at $fallback_request_at"
-            fi
+    if [ "$activity_seen" = "no" ]; then
+        previous_fallback_request_id="$fallback_request_id"
+        previous_terminal_failure_seen="$terminal_failure_seen"
+        fallback_state=$(current_head_fallback_state)
+        IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+
+        if [ "$fallback_request_id" != "none" ] && [ "$fallback_request_id" != "$previous_fallback_request_id" ]; then
+            echo "[poll] newest current-head fallback marker became visible at $fallback_request_at"
         fi
-        if [ -n "$fallback_request_at" ]; then
-            terminal_failures=$(copilot_terminal_failures_after "$fallback_request_at")
-            terminal_failures="${terminal_failures:-0}"
-            if [ "$terminal_failures" -gt 0 ]; then
-                terminal_failure_seen="yes"
-                echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
-            fi
+        if [ "$previous_terminal_failure_seen" = "yes" ] && [ "$terminal_failure_seen" = "no" ]; then
+            echo "[poll] newer Copilot trigger superseded the prior terminal failure — resuming Copilot review wait"
+        elif [ "$previous_terminal_failure_seen" = "no" ] && [ "$terminal_failure_seen" = "yes" ]; then
+            echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
         fi
     fi
 
