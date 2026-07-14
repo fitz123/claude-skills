@@ -11,7 +11,7 @@ allowed-tools:
 
 # github-pr — Copilot-aware PR review loop
 
-This skill exists because the Copilot review cycle has three non-obvious gotchas
+This skill exists because the Copilot review cycle has four non-obvious gotchas
 that silently waste minutes of polling each round if you miss them:
 
 1. **Copilot does NOT auto-re-review on every push.** The first review is
@@ -29,6 +29,11 @@ that silently waste minutes of polling each round if you miss them:
    not as a formal Review.** A watcher that only polls `reviews[]` waits
    forever. The poller in this skill watches BOTH `reviews[]` and Copilot
    comments since baseline.
+4. **A fallback request can terminate without any review activity.** GitHub
+   records `copilot_work_finished_failure` in the PR timeline when Copilot
+   Agent stops this way, but does not expose the UI's detailed reason through
+   that API. The poller accepts this only after the marked fallback request for
+   the current head, reports the no-review outcome, and then waits for CI only.
 
 Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
@@ -55,7 +60,10 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    poller first checks whether Copilot already reviewed the PR's current head
    SHA; if yes, it treats that as success and only waits for CI. Only when
    there is neither current-head Copilot activity nor a pending Copilot reviewer
-   does it invoke `request-copilot-rereview.sh`, so step 3 is no longer required:
+   does it invoke `request-copilot-rereview.sh`, so step 3 is no longer required.
+   If the marked fallback request ends in `copilot_work_finished_failure`, the
+   poller reports that terminal no-review outcome and still does not return
+   until all CI checks have completed (or the overall timeout is reached):
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
@@ -111,6 +119,11 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
 - **Heartbeat the poller.** A poll loop that emits only at completion is
   indistinguishable from a hung shell when a watching agent (or human) checks
   `wc -c` on the output. The script in this skill prints per-iteration lines.
+- **A terminal Copilot failure is not CI success.** The poller stops expecting
+  a review only when `copilot_work_finished_failure` occurs after the fallback
+  marker for the current PR head. It continues polling until CI settles, and
+  callers should treat the explicit terminal-failure line as a no-review
+  outcome rather than as review approval.
 - **Empty `start_*` vs typo guard.** If `gh pr view` errors transiently,
   capture in the loop body might come back empty. The poller falls back to the
   baseline value to avoid bash's `[ "" -gt 0 ]` error.

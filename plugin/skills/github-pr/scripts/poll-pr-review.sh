@@ -12,6 +12,12 @@
 # comment fallback causes Copilot to reply as a COMMENT (`copilot-swe-agent`),
 # not as a formal review. A watcher that only checks `reviews[]` waits forever.
 #
+# Why a terminal fallback failure also completes the Copilot wait: GitHub can
+# accept the fallback comment, start Copilot Agent, and then record a generic
+# `copilot_work_finished_failure` timeline event without posting a review or
+# comment. Correlating that event to the current head's marked request lets the
+# poller stop waiting for review activity while still requiring CI to finish.
+#
 # Usage:
 #   poll-pr-review.sh <pr-number> [timeout-seconds]
 #   poll-pr-review.sh 15
@@ -65,6 +71,30 @@ copilot_comments_since_head() {
         2>/dev/null || echo 0
 }
 
+current_head_fallback_requested_at() {
+    # request-copilot-rereview.sh includes this head-specific marker in its
+    # fallback comment. Select the newest matching request in case a caller
+    # deliberately retried after the idempotency cooldown.
+    local request_marker="<!-- github-pr-rereview-head:$head_sha -->"
+    gh api "repos/$repo/issues/$pr/comments?per_page=100" --paginate 2>/dev/null | \
+        jq -sr --arg marker "$request_marker" \
+            '[.[][]? | select(((.body // "") | contains($marker))) | .created_at] | max // ""' \
+            2>/dev/null || echo ""
+}
+
+copilot_terminal_failures_after() {
+    local request_at="$1"
+    if [ -z "$request_at" ]; then
+        echo 0
+        return
+    fi
+    gh api "repos/$repo/issues/$pr/timeline?per_page=100" \
+        -H "Accept: application/vnd.github+json" --paginate 2>/dev/null | \
+        jq -sr --arg request_at "$request_at" \
+            '[.[][]? | select(.event == "copilot_work_finished_failure" and (.created_at // "") > $request_at)] | length' \
+            2>/dev/null || echo 0
+}
+
 print_final_state() {
     echo
     echo "=== FINAL STATE — pr=#$pr ==="
@@ -113,7 +143,10 @@ else
     echo "[poll] Copilot already pending as reviewer — skipping pre-flight request"
 fi
 
-echo "[poll] repo=$repo pr=#$pr head=$head_sha baseline: current_head_reviews=$start_reviews copilot_comments_since_head=$start_comments activity_seen=$activity_seen budget=${budget}s"
+fallback_request_at=$(current_head_fallback_requested_at)
+terminal_failure_seen="no"
+
+echo "[poll] repo=$repo pr=#$pr head=$head_sha baseline: current_head_reviews=$start_reviews copilot_comments_since_head=$start_comments activity_seen=$activity_seen fallback_request_at=${fallback_request_at:-none} budget=${budget}s"
 
 deadline=$((SECONDS + budget))
 iter=0
@@ -131,12 +164,25 @@ while [ $SECONDS -lt $deadline ]; do
         activity_seen="yes"
     fi
 
-    printf '[poll] iter=%d t=%ds checks_done=%s activity_seen=%s new_review=%s new_comment=%s (head_reviews %s→%s comments_since_head %s→%s)\n' \
-        "$iter" "$elapsed" "$checks_done" "$activity_seen" "$new_review" "$new_comment" \
+    if [ "$activity_seen" = "no" ] && [ "$terminal_failure_seen" = "no" ] && [ -n "$fallback_request_at" ]; then
+        terminal_failures=$(copilot_terminal_failures_after "$fallback_request_at")
+        terminal_failures="${terminal_failures:-0}"
+        if [ "$terminal_failures" -gt 0 ]; then
+            terminal_failure_seen="yes"
+            echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+        fi
+    fi
+
+    printf '[poll] iter=%d t=%ds checks_done=%s activity_seen=%s terminal_failure_seen=%s new_review=%s new_comment=%s (head_reviews %s→%s comments_since_head %s→%s)\n' \
+        "$iter" "$elapsed" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$new_review" "$new_comment" \
         "$start_reviews" "$cur_reviews" "$start_comments" "$cur_comments"
 
     if [ "$checks_done" = "true" ] && [ "$activity_seen" = "yes" ]; then
         echo "[poll] CI done + Copilot activity observed — exiting loop"
+        break
+    fi
+    if [ "$checks_done" = "true" ] && [ "$terminal_failure_seen" = "yes" ]; then
+        echo "[poll] CI done + Copilot terminal failure observed — exiting loop"
         break
     fi
     sleep 20

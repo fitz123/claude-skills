@@ -25,12 +25,12 @@ Add a self-contained shell regression test with a fake `gh` executable. Cover te
 ## Implementation Steps
 
 ### Task 1: Detect current-request Copilot terminal failure
-- [ ] Update `poll-pr-review.sh` to locate the current-head fallback request marker and detect a later `copilot_work_finished_failure` timeline event.
-- [ ] Treat a correlated terminal failure as a Copilot no-op, emit an explicit outcome line, and continue waiting only until CI completes instead of exhausting the Copilot timeout.
-- [ ] Preserve existing current-head review/comment detection, pre-flight request behavior, CI requirement, timeout semantics, and final-state diagnostics.
-- [ ] Add focused shell regression tests for a correlated failure, an old/unrelated failure, and normal Copilot activity.
-- [ ] Update `plugin/skills/github-pr/SKILL.md` to document the terminal-failure behavior and caller expectations.
-- [ ] Run the focused tests and shell syntax checks; all must pass.
+- [x] Update `poll-pr-review.sh` to locate the current-head fallback request marker and detect a later `copilot_work_finished_failure` timeline event.
+- [x] Treat a correlated terminal failure as a Copilot no-op, emit an explicit outcome line, and continue waiting only until CI completes instead of exhausting the Copilot timeout.
+- [x] Preserve existing current-head review/comment detection, pre-flight request behavior, CI requirement, timeout semantics, and final-state diagnostics.
+- [x] Add focused shell regression tests for a correlated failure, an old/unrelated failure, and normal Copilot activity.
+- [x] Update `plugin/skills/github-pr/SKILL.md` to document the terminal-failure behavior and caller expectations.
+- [x] Run the focused tests and shell syntax checks; all must pass.
 
 ## Validation Commands
 
