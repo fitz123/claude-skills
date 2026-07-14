@@ -107,8 +107,12 @@ fake_gh() {
                 repos/example/widgets/pulls/42/reviews)
                     local review_call
                     review_call=$(next_call reviews)
-                    if { [ "$TEST_SCENARIO" = "normal_review" ] && [ "$review_call" -gt 1 ]; } || \
-                       { [ "$TEST_SCENARIO" = "stale_failure" ] && [ "$review_call" -gt 2 ]; }; then
+                    local review_after=0
+                    case "$TEST_SCENARIO" in
+                        normal_review) review_after=1 ;;
+                        stale_failure|same_head_retry|superseded_rest) review_after=2 ;;
+                    esac
+                    if [ "$review_after" -gt 0 ] && [ "$review_call" -gt "$review_after" ]; then
                         emit_json "[{\"user\":{\"login\":\"copilot-pull-request-reviewer[bot]\"},\"commit_id\":\"$head_sha\"}]"
                     else
                         emit_json '[]'
@@ -125,6 +129,21 @@ fake_gh() {
                         stale_failure)
                             emit_json "[{\"created_at\":\"2026-07-14T09:00:00Z\",\"body\":\"<!-- github-pr-rereview-head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\"},{\"created_at\":\"2026-07-14T10:05:00Z\",\"body\":\"$current_marker\"}]"
                             ;;
+                        delayed_marker)
+                            local fallback_comment_call
+                            fallback_comment_call=$(next_call fallback_comments)
+                            if [ "$fallback_comment_call" -eq 1 ]; then
+                                emit_json '[]'
+                            else
+                                emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"}]"
+                            fi
+                            ;;
+                        same_head_retry)
+                            emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"},{\"created_at\":\"2026-07-14T10:05:00Z\",\"body\":\"$current_marker\"}]"
+                            ;;
+                        superseded_rest)
+                            emit_json "[{\"created_at\":\"2026-07-14T10:00:00Z\",\"body\":\"$current_marker\"}]"
+                            ;;
                         *)
                             emit_json '[]'
                             ;;
@@ -137,6 +156,15 @@ fake_gh() {
                             ;;
                         stale_failure)
                             emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:00:00Z"}]'
+                            ;;
+                        delayed_marker)
+                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:00:05Z"}]'
+                            ;;
+                        same_head_retry)
+                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:02:00Z"}]'
+                            ;;
+                        superseded_rest)
+                            emit_json '[{"event":"copilot_work_finished_failure","created_at":"2026-07-14T10:01:00Z"},{"event":"review_requested","created_at":"2026-07-14T10:02:00Z","requested_reviewer":{"login":"Copilot"}}]'
                             ;;
                         *)
                             emit_json '[]'
@@ -221,6 +249,27 @@ assert_contains "$output" 'iter=2' 'stale failure rejection keeps polling'
 assert_contains "$output" 'CI done + Copilot activity observed' 'stale failure normal completion'
 assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'stale failure rejection'
 printf '%s\n' 'ok - failure before current-head marker is rejected'
+
+output=$(run_case delayed_marker)
+assert_contains "$output" 'fallback_request_at=none' 'delayed marker initial lookup'
+assert_contains "$output" 'fallback marker became visible at 2026-07-14T10:00:00Z' 'delayed marker retry'
+assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'delayed marker failure'
+assert_contains "$output" 'CI done + Copilot terminal failure observed' 'delayed marker completion'
+printf '%s\n' 'ok - delayed fallback marker discovery is retried'
+
+output=$(run_case same_head_retry)
+assert_contains "$output" 'new_review=yes' 'same-head retry normal review'
+assert_contains "$output" 'iter=2' 'same-head retry rejection keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'same-head retry normal completion'
+assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'same-head retry rejection'
+printf '%s\n' 'ok - failure before newest same-head marker is rejected'
+
+output=$(run_case superseded_rest)
+assert_contains "$output" 'new_review=yes' 'superseding REST request normal review'
+assert_contains "$output" 'iter=2' 'superseding REST request keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'superseding REST request normal completion'
+assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'superseding REST request rejection'
+printf '%s\n' 'ok - newer REST request supersedes old fallback failure'
 
 output=$(run_case normal_review)
 assert_contains "$output" 'new_review=yes' 'normal review'

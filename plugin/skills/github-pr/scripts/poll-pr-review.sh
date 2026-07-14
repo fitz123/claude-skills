@@ -15,8 +15,9 @@
 # Why a terminal fallback failure also completes the Copilot wait: GitHub can
 # accept the fallback comment, start Copilot Agent, and then record a generic
 # `copilot_work_finished_failure` timeline event without posting a review or
-# comment. Correlating that event to the current head's marked request lets the
-# poller stop waiting for review activity while still requiring CI to finish.
+# comment. Correlating that event to the current head's marked request, unless
+# a newer Copilot request supersedes it, lets the poller stop waiting for review
+# activity while still requiring CI to finish.
 #
 # Usage:
 #   poll-pr-review.sh <pr-number> [timeout-seconds]
@@ -91,7 +92,17 @@ copilot_terminal_failures_after() {
     gh api "repos/$repo/issues/$pr/timeline?per_page=100" \
         -H "Accept: application/vnd.github+json" --paginate 2>/dev/null | \
         jq -sr --arg request_at "$request_at" \
-            '[.[][]? | select(.event == "copilot_work_finished_failure" and (.created_at // "") > $request_at)] | length' \
+            'def is_copilot_review_request:
+                (.event == "review_requested") and
+                (((.requested_reviewer.login // "") | ascii_downcase) as $login |
+                    ($login == "copilot" or
+                     $login == "copilot-pull-request-reviewer" or
+                     $login == "copilot-pull-request-reviewer[bot]"));
+             [.[][]?] as $events |
+             if any($events[]; is_copilot_review_request and (.created_at // "") > $request_at)
+             then 0
+             else [$events[] | select(.event == "copilot_work_finished_failure" and (.created_at // "") > $request_at)] | length
+             end' \
             2>/dev/null || echo 0
 }
 
@@ -164,12 +175,20 @@ while [ $SECONDS -lt $deadline ]; do
         activity_seen="yes"
     fi
 
-    if [ "$activity_seen" = "no" ] && [ "$terminal_failure_seen" = "no" ] && [ -n "$fallback_request_at" ]; then
-        terminal_failures=$(copilot_terminal_failures_after "$fallback_request_at")
-        terminal_failures="${terminal_failures:-0}"
-        if [ "$terminal_failures" -gt 0 ]; then
-            terminal_failure_seen="yes"
-            echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+    if [ "$activity_seen" = "no" ] && [ "$terminal_failure_seen" = "no" ]; then
+        if [ -z "$fallback_request_at" ]; then
+            fallback_request_at=$(current_head_fallback_requested_at)
+            if [ -n "$fallback_request_at" ]; then
+                echo "[poll] current-head fallback marker became visible at $fallback_request_at"
+            fi
+        fi
+        if [ -n "$fallback_request_at" ]; then
+            terminal_failures=$(copilot_terminal_failures_after "$fallback_request_at")
+            terminal_failures="${terminal_failures:-0}"
+            if [ "$terminal_failures" -gt 0 ]; then
+                terminal_failure_seen="yes"
+                echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+            fi
         fi
     fi
 

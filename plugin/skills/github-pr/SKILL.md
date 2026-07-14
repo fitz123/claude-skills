@@ -33,7 +33,8 @@ that silently waste minutes of polling each round if you miss them:
    records `copilot_work_finished_failure` in the PR timeline when Copilot
    Agent stops this way, but does not expose the UI's detailed reason through
    that API. The poller accepts this only after the marked fallback request for
-   the current head, reports the no-review outcome, and then waits for CI only.
+   the current head and only when no newer Copilot review request supersedes it,
+   reports the no-review outcome, and then waits for CI only.
 
 Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
@@ -121,9 +122,10 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   `wc -c` on the output. The script in this skill prints per-iteration lines.
 - **A terminal Copilot failure is not CI success.** The poller stops expecting
   a review only when `copilot_work_finished_failure` occurs after the fallback
-  marker for the current PR head. It continues polling until CI settles, and
-  callers should treat the explicit terminal-failure line as a no-review
-  outcome rather than as review approval.
+  marker for the current PR head and no newer Copilot request supersedes that
+  fallback. It continues polling until CI settles, and callers should treat the
+  explicit terminal-failure line as a no-review outcome rather than as review
+  approval.
 - **Empty `start_*` vs typo guard.** If `gh pr view` errors transiently,
   capture in the loop body might come back empty. The poller falls back to the
   baseline value to avoid bash's `[ "" -gt 0 ]` error.
