@@ -124,9 +124,10 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   a review only when `copilot_work_finished_failure` occurs after the fallback
   marker for the current PR head and no newer Copilot request or `@copilot`
   trigger supersedes that fallback in timeline order. It re-evaluates that
-  ordering while polling, continues until CI settles, and callers should treat
-  the explicit terminal-failure line as a no-review outcome rather than as
-  review approval.
+  ordering only from complete timeline snapshots, preserves the last known
+  state across transient lookup failures, continues until CI settles, and
+  callers should treat the explicit terminal-failure line as a no-review
+  outcome rather than as review approval.
 - **Empty `start_*` vs typo guard.** If `gh pr view` errors transiently,
   capture in the loop body might come back empty. The poller falls back to the
   baseline value to avoid bash's `[ "" -gt 0 ]` error.

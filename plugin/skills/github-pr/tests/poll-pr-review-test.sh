@@ -61,7 +61,7 @@ fake_gh() {
                         local check_call
                         check_call=$(next_call checks)
                         case "$TEST_SCENARIO" in
-                            correlated_failure|in_flight_marker|in_flight_rest)
+                            correlated_failure|in_flight_marker|in_flight_rest|timeline_refresh_error)
                                 if [ "$check_call" -lt 3 ]; then
                                     emit_json '[{"completedAt":null}]'
                                 else
@@ -116,7 +116,7 @@ fake_gh() {
                     review_call=$(next_call reviews)
                     local review_after=0
                     case "$TEST_SCENARIO" in
-                        normal_review) review_after=1 ;;
+                        normal_review|partial_timeline_error) review_after=1 ;;
                         stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
                         in_flight_marker|in_flight_rest) review_after=3 ;;
                     esac
@@ -135,6 +135,16 @@ fake_gh() {
                     case "$TEST_SCENARIO" in
                         correlated_failure)
                             emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            ;;
+                        partial_timeline_error)
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            return 1
+                            ;;
+                        timeline_refresh_error)
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
+                            if [ "$timeline_call" -gt 1 ]; then
+                                return 1
+                            fi
                             ;;
                         stale_failure)
                             emit_json "[{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:00Z\"},{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:05:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"}]"
@@ -251,6 +261,21 @@ assert_contains "$output" 'waiting for CI only' 'correlated failure'
 assert_contains "$output" 'iter=2' 'correlated failure preserves CI gating'
 assert_contains "$output" 'CI done + Copilot terminal failure observed' 'correlated failure completion'
 printf '%s\n' 'ok - correlated terminal failure waits only for CI'
+
+output=$(run_case partial_timeline_error)
+assert_contains "$output" 'could not read the complete PR timeline' 'partial timeline failure'
+assert_contains "$output" 'new_review=yes' 'partial timeline failure keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'partial timeline failure normal completion'
+assert_not_contains "$output" 'fallback request ended with copilot_work_finished_failure' 'partial timeline failure rejection'
+printf '%s\n' 'ok - partial timeline failure cannot create terminal evidence'
+
+output=$(run_case timeline_refresh_error)
+assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'timeline refresh error initial state'
+assert_contains "$output" 'preserving the last known fallback state' 'timeline refresh error retention'
+assert_contains "$output" 'iter=2' 'timeline refresh error preserves CI gating'
+assert_contains "$output" 'CI done + Copilot terminal failure observed' 'timeline refresh error completion'
+assert_not_contains "$output" 'newer Copilot trigger superseded the prior terminal failure' 'timeline refresh error does not clear state'
+printf '%s\n' 'ok - timeline refresh failure preserves terminal evidence'
 
 output=$(run_case stale_failure)
 assert_contains "$output" 'new_review=yes' 'stale failure normal review'

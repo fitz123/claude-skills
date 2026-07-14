@@ -78,9 +78,13 @@ current_head_fallback_state() {
     # lets a newer fallback, REST request, or unrelated @copilot trigger
     # supersede an older failure while the poller is still running.
     local request_marker="<!-- github-pr-rereview-head:$head_sha -->"
-    gh api "repos/$repo/issues/$pr/timeline?per_page=100" \
-        -H "Accept: application/vnd.github+json" --paginate 2>/dev/null | \
-        jq -sr --arg marker "$request_marker" \
+    local timeline_json
+    if ! timeline_json=$(gh api "repos/$repo/issues/$pr/timeline?per_page=100" \
+        -H "Accept: application/vnd.github+json" --paginate 2>/dev/null); then
+        return 1
+    fi
+
+    jq -sr --arg marker "$request_marker" \
             'def event_login:
                 ((.user.login // .actor.login // "") | ascii_downcase);
              def is_copilot_actor:
@@ -119,8 +123,7 @@ current_head_fallback_state() {
                      else "no"
                      end)
                 ] | @tsv
-             end' \
-            2>/dev/null || printf 'none\tnone\tno\n'
+             end' 2>/dev/null <<< "$timeline_json"
 }
 
 print_final_state() {
@@ -171,8 +174,14 @@ else
     echo "[poll] Copilot already pending as reviewer — skipping pre-flight request"
 fi
 
-fallback_state=$(current_head_fallback_state)
-IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+fallback_request_id="none"
+fallback_request_at="none"
+terminal_failure_seen="no"
+if fallback_state=$(current_head_fallback_state); then
+    IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+else
+    echo "[poll] WARNING: could not read the complete PR timeline — fallback state remains unknown and will be retried"
+fi
 
 if [ "$terminal_failure_seen" = "yes" ]; then
     echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
@@ -197,18 +206,21 @@ while [ $SECONDS -lt $deadline ]; do
     fi
 
     if [ "$activity_seen" = "no" ]; then
-        previous_fallback_request_id="$fallback_request_id"
-        previous_terminal_failure_seen="$terminal_failure_seen"
-        fallback_state=$(current_head_fallback_state)
-        IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+        if fallback_state=$(current_head_fallback_state); then
+            previous_fallback_request_id="$fallback_request_id"
+            previous_terminal_failure_seen="$terminal_failure_seen"
+            IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
 
-        if [ "$fallback_request_id" != "none" ] && [ "$fallback_request_id" != "$previous_fallback_request_id" ]; then
-            echo "[poll] newest current-head fallback marker became visible at $fallback_request_at"
-        fi
-        if [ "$previous_terminal_failure_seen" = "yes" ] && [ "$terminal_failure_seen" = "no" ]; then
-            echo "[poll] newer Copilot trigger superseded the prior terminal failure — resuming Copilot review wait"
-        elif [ "$previous_terminal_failure_seen" = "no" ] && [ "$terminal_failure_seen" = "yes" ]; then
-            echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+            if [ "$fallback_request_id" != "none" ] && [ "$fallback_request_id" != "$previous_fallback_request_id" ]; then
+                echo "[poll] newest current-head fallback marker became visible at $fallback_request_at"
+            fi
+            if [ "$previous_terminal_failure_seen" = "yes" ] && [ "$terminal_failure_seen" = "no" ]; then
+                echo "[poll] newer Copilot trigger superseded the prior terminal failure — resuming Copilot review wait"
+            elif [ "$previous_terminal_failure_seen" = "no" ] && [ "$terminal_failure_seen" = "yes" ]; then
+                echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for CI only"
+            fi
+        else
+            echo "[poll] WARNING: could not refresh the complete PR timeline — preserving the last known fallback state"
         fi
     fi
 
