@@ -1,6 +1,6 @@
 {
   "name": "claude-skills",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "Shared Claude Code skills: brainstorming, code review, docs, remote review via Notion, GitHub PR review loops (with Copilot pre-flight auto-request), multi-reviewer adversarial review (Codex+Opus+Gemini), iterative pre-PR review with codex external loop (ralph-review)",
   "author": {
     "name": "fitz123"
