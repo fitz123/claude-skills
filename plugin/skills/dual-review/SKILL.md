@@ -1,11 +1,11 @@
 ---
 name: dual-review
-description: "Legacy alias — dual-review was renamed to multi-review with Gemini added as a third reviewer. Triggers preserved for muscle memory: dual review, /dual-review, co-review, cross-review, opus+codex review. Will be removed in v3.0.0."
+description: "Legacy alias — dual-review was renamed to multi-review with Gemini added as a third reviewer. Triggers preserved for muscle memory: dual review, /dual-review, co-review, cross-review, fable+codex review. Will be removed in v3.0.0."
 ---
 
 # Dual Review (legacy alias)
 
-This skill has been renamed to `multi-review` and now runs three reviewers (Codex + Opus + Gemini) instead of two. Invoke `/multi-review` (or `claude-skills:multi-review` via the Skill tool) to use the new flow.
+This skill has been renamed to `multi-review` and now runs three reviewers (Codex + Fable + Gemini) instead of two. Invoke `/multi-review` (or `claude-skills:multi-review` via the Skill tool) to use the new flow.
 
 ## What to do when this skill is triggered
 
