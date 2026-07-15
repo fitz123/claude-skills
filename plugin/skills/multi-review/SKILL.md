@@ -1,6 +1,6 @@
 ---
 name: multi-review
-description: Run three independent reviewers (Codex via direct `codex exec`, a fresh Opus subagent via `Task`, and Gemini via the Antigravity `agy` CLI) in parallel against the current branch, merge findings, then write all questions to a markdown file for single-pass plannotator review before applying anything. Use when user says "multi review", "/multi-review", "triple review", "dual review" (legacy), "co-review", "cross-review", "opus+codex+gemini review", or asks for a multi-reviewer code review.
+description: Run three independent reviewers (Codex via direct `codex exec`, a fresh Fable subagent via `Task`, and Gemini via the Antigravity `agy` CLI) in parallel against the current branch, merge findings, then write all questions to a markdown file for single-pass plannotator review before applying anything. Use when user says "multi review", "/multi-review", "triple review", "dual review" (legacy), "co-review", "cross-review", "fable+codex+gemini review", or asks for a multi-reviewer code review.
 argument-hint: "[base-branch]"
 allowed-tools:
   - Bash(agy:*)
@@ -29,7 +29,7 @@ allowed-tools:
 
 # Multi Review
 
-Codex (via direct `codex exec`), a fresh Opus subagent (via the `Task` tool with `subagent_type: "general-purpose"`), and Gemini (via the Antigravity `agy` CLI) review the branch in parallel. Findings merged, written to one markdown file, opened with `plannotator annotate` for single-pass review, applied in one commit. Save pre-review HEAD as the rollback SHA.
+Codex (via direct `codex exec`), a fresh Fable subagent (via the `Task` tool with `subagent_type: "general-purpose"` and `model: "fable"`), and Gemini (via the Antigravity `agy` CLI) review the branch in parallel. Findings merged, written to one markdown file, opened with `plannotator annotate` for single-pass review, applied in one commit. Save pre-review HEAD as the rollback SHA.
 
 ## Prerequisites
 
@@ -49,7 +49,7 @@ Before launching, run `git diff {base}...HEAD` in the orchestrator and inline it
 
 ### Parallelism contract (load-bearing — read this)
 
-All three reviewer invocations **MUST** be dispatched as three tool calls in a **single assistant message**, with **all three set to run in the background**. Empirically verified (Opus+Gemini+Codex against a small diff): with this pattern, wall-clock ≈ max(reviewers) ≈ 54s; without `run_in_background`, the UI serializes foreground tool calls and wall-clock ≈ sum(reviewers) ≈ 112s. Same-message foreground tool calls render and complete in dispatch order — that is sequential in practice. Background mode is the only reliable way to get genuine parallelism in this harness.
+All three reviewer invocations **MUST** be dispatched as three tool calls in a **single assistant message**, with **all three set to run in the background**. Empirically verified (Fable+Gemini+Codex against a small diff): with this pattern, wall-clock ≈ max(reviewers) ≈ 54s; without `run_in_background`, the UI serializes foreground tool calls and wall-clock ≈ sum(reviewers) ≈ 112s. Same-message foreground tool calls render and complete in dispatch order — that is sequential in practice. Background mode is the only reliable way to get genuine parallelism in this harness.
 
 **Do NOT route through the `Skill` tool for `thinking-tools:ask-codex` or `claude-skills:ask-gemini` here.** The `Skill` tool *loads* the underlying skill's instructions into the conversation; it does NOT execute the CLI. Following those instructions requires an additional message per reviewer, which adds a serializing round-trip. The `Skill` tool is the right path for standalone interactive use (e.g. someone asking "ask codex about X"); inside `multi-review` we inline the CLI invocations directly with `run_in_background: true` to preserve concurrency.
 
@@ -71,7 +71,7 @@ All three reviewer invocations **MUST** be dispatched as three tool calls in a *
 
    Returns a background task ID immediately. The CLI runs in the background until codex finishes (2–5 min typical).
 
-2. **Opus — `Task` tool with `run_in_background: true`**, `subagent_type: "general-purpose"`, with the entire adversarial review prompt as the `prompt` argument. Returns an agent ID immediately; the subagent runs concurrently with the two `Bash` reviewers.
+2. **Fable — `Task` tool with `run_in_background: true`**, `subagent_type: "general-purpose"`, `model: "fable"`, with the entire adversarial review prompt as the `prompt` argument. Returns an agent ID immediately; the subagent runs concurrently with the two `Bash` reviewers.
 
 3. **Gemini — `Bash` tool with `run_in_background: true`** (not `Skill`):
 
@@ -79,7 +79,7 @@ All three reviewer invocations **MUST** be dispatched as three tool calls in a *
    agy --sandbox --print-timeout 10m -p "Read the file /tmp/multi-review-prompt-<random>.txt in full and perform the adversarial code review it describes. Use only read-only reasoning over the inlined diff; do not edit, write, or run shell commands. Output ONLY the JSON it specifies, nothing else."
    ```
 
-   Write the FULL adversarial prompt (with the diff already inlined — identical to what Codex/Opus get) to a temp file first (`Write` tool to `/tmp/multi-review-prompt-$RANDOM.txt`), then point `agy` at it by absolute path. Key reasons for the file-read form (not `agy -p "<whole prompt>"`):
+   Write the FULL adversarial prompt (with the diff already inlined — identical to what Codex/Fable get) to a temp file first (`Write` tool to `/tmp/multi-review-prompt-$RANDOM.txt`), then point `agy` at it by absolute path. Key reasons for the file-read form (not `agy -p "<whole prompt>"`):
    - `agy -p` takes the prompt as a flag **argument**, not stdin (`agy -p < file` errors with `flag needs an argument`). Inlining a real PR diff as the argument would blow past shell ARG_MAX (~1MB on macOS) and trip the harness's command-classification heuristics on the `"$(cat …)"` substitution. Pointing `agy` at the file sidesteps both.
    - The diff lives inside the file, so `agy` reviews from the inlined diff and needs no repo access — the single read of the known prompt file is the only tool call.
 
@@ -121,7 +121,7 @@ For each finding: verify against actual code at `file:line_start..line_end` (dis
 ```
 to ask:    N
 discarded: K (low-signal + false positives)
-gap:       none | Codex | Opus | Gemini | <multiple, comma-separated>
+gap:       none | Codex | Fable | Gemini | <multiple, comma-separated>
 ```
 
 `to ask == 0` → report clean, stop.
@@ -136,7 +136,7 @@ gap:       none | Codex | Opus | Gemini | <multiple, comma-separated>
 ## 1. <title>
 
 - severity: high
-- reviewers: Codex+Opus+Gemini
+- reviewers: Codex+Fable+Gemini
 - file: `path:line-line`
 - finding: <2-4 sentences>
 - recommendation: <combined, or per-reviewer if divergent>
@@ -166,7 +166,7 @@ Apply each `apply`'d fix. Stage modified files by name. Run discovered tests/lin
 ✗ skipped: K
 ⚠ unresolvable: U
 
-reviewers:        Codex+Opus+Gemini | Codex+Opus | Codex+Gemini | Opus+Gemini | Codex only | Opus only | Gemini only | none
+reviewers:        Codex+Fable+Gemini | Codex+Fable | Codex+Gemini | Fable+Gemini | Codex only | Fable only | Gemini only | none
 discarded:        count (low-signal + FPs)
 submodule notes:  pointer changes flagged in Step 0 (not reviewed inline)
 pre-review HEAD:  <sha>
