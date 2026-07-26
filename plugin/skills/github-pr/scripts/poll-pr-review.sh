@@ -24,6 +24,15 @@
 #   poll-pr-review.sh 15
 #   poll-pr-review.sh 15 900
 #
+# Optional completion notification (absent-safe — nothing is sent unless set):
+#   GH_PR_NOTIFY_TARGET=<chat_id>   deliver a one-line completion summary to
+#                                   this Telegram chat via the Minime notify
+#                                   helper when polling finishes
+#   GH_PR_NOTIFY_THREAD=<topic_id>  optional forum topic for the delivery
+#   GH_PR_NOTIFY_SCRIPT=<path>      override the notify helper (default:
+#                                   $MINIME_CONTROL_WORKSPACE_ROOT/scripts/
+#                                   notify-telegram-configured.sh)
+#
 # Exits 0 when both conditions are met OR timeout is reached (still emits final state).
 set -u
 
@@ -46,11 +55,13 @@ head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
 head_commit_at=$(gh pr view "$pr" --json commits --jq '.commits[-1].committedDate // ""' 2>/dev/null || echo "")
 
 checks_complete() {
-    # CI: all checks have a non-null completedAt (i.e., nothing in flight).
+    # CI: all checks have a real completedAt (i.e., nothing in flight).
     # NOTE: do NOT compare state == "COMPLETED" — `gh pr checks --json state`
     # returns SUCCESS/FAILURE/IN_PROGRESS/PENDING etc, not COMPLETED.
+    # NOTE: current gh emits the Go zero time "0001-01-01T00:00:00Z" for an
+    # in-progress check instead of null — treat it as pending, not settled.
     gh pr checks "$pr" --json completedAt \
-        --jq '[.[].completedAt] | all(. != null and . != "")' 2>/dev/null || echo false
+        --jq '[.[].completedAt] | all(. != null and . != "" and (startswith("0001-01-01") | not))' 2>/dev/null || echo false
 }
 
 current_head_reviews() {
@@ -126,6 +137,27 @@ current_head_fallback_state() {
              end' 2>/dev/null <<< "$timeline_json"
 }
 
+notify_completion() {
+    # Push the poll outcome back to the chat that launched the cycle instead of
+    # leaving it only in a background log. Absent-safe: without a target this
+    # is a no-op and delivery failures never change the poller's exit code.
+    local target="${GH_PR_NOTIFY_TARGET:-}"
+    [ -z "$target" ] && return 0
+    local notify_script="${GH_PR_NOTIFY_SCRIPT:-${MINIME_CONTROL_WORKSPACE_ROOT:-$HOME/.minime/control-workspace}/scripts/notify-telegram-configured.sh}"
+    if [ ! -x "$notify_script" ]; then
+        echo "[poll] WARNING: GH_PR_NOTIFY_TARGET is set but notify helper is unavailable: $notify_script"
+        return 0
+    fi
+    local summary="github-pr poll finished: $repo PR #$pr — checks_done=$checks_done copilot_activity=$activity_seen copilot_terminal_failure=$terminal_failure_seen"
+    if [ -n "${GH_PR_NOTIFY_THREAD:-}" ]; then
+        printf '%s\n' "$summary" | "$notify_script" "$target" --thread "$GH_PR_NOTIFY_THREAD" \
+            || echo "[poll] WARNING: completion notification delivery failed"
+    else
+        printf '%s\n' "$summary" | "$notify_script" "$target" \
+            || echo "[poll] WARNING: completion notification delivery failed"
+    fi
+}
+
 print_final_state() {
     echo
     echo "=== FINAL STATE — pr=#$pr ==="
@@ -149,9 +181,11 @@ start_comments=$(copilot_comments_since_head)
 activity_seen=$([ "$start_reviews" -gt 0 ] || [ "$start_comments" -gt 0 ] && echo "yes" || echo "no")
 checks_done=$(checks_complete)
 
+terminal_failure_seen="no"
 if [ "$activity_seen" = "yes" ] && [ "$checks_done" = "true" ]; then
     echo "[poll] current head already has Copilot activity and CI is done — no re-request needed"
     print_final_state
+    notify_completion
     exit 0
 fi
 
@@ -242,3 +276,4 @@ while [ $SECONDS -lt $deadline ]; do
 done
 
 print_final_state
+notify_completion

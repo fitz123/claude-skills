@@ -68,6 +68,13 @@ fake_gh() {
                                     emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
                                 fi
                                 ;;
+                            zero_completed_at)
+                                if [ "$check_call" -lt 3 ]; then
+                                    emit_json '[{"completedAt":"0001-01-01T00:00:00Z"}]'
+                                else
+                                    emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
+                                fi
+                                ;;
                             *)
                                 emit_json '[{"completedAt":"2026-07-14T10:10:00Z"}]'
                                 ;;
@@ -116,7 +123,7 @@ fake_gh() {
                     review_call=$(next_call reviews)
                     local review_after=0
                     case "$TEST_SCENARIO" in
-                        normal_review|partial_timeline_error) review_after=1 ;;
+                        normal_review|partial_timeline_error|zero_completed_at) review_after=1 ;;
                         stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
                         in_flight_marker|in_flight_rest) review_after=3 ;;
                         timeline_refresh_error) review_after=4 ;;
@@ -353,5 +360,39 @@ output=$(run_case normal_comment)
 assert_contains "$output" 'new_comment=yes' 'normal comment'
 assert_contains "$output" 'CI done + Copilot activity observed' 'normal comment completion'
 printf '%s\n' 'ok - normal Copilot comment activity is preserved'
+
+output=$(run_case zero_completed_at)
+assert_contains "$output" 'checks_done=false' 'zero completedAt is pending'
+assert_contains "$output" 'iter=2' 'zero completedAt keeps polling'
+assert_contains "$output" 'CI done + Copilot activity observed' 'zero completedAt completion'
+printf '%s\n' 'ok - Go zero-time completedAt is treated as in-progress'
+
+# Completion notification: absent-safe by default, delivered when a target is set.
+notify_log="$tmp_dir/notify.log"
+cat > "$tmp_dir/bin/fake-notify.sh" <<EOF
+#!/usr/bin/env bash
+printf 'args=%s message=%s\n' "\$*" "\$(cat)" >> "$notify_log"
+EOF
+chmod +x "$tmp_dir/bin/fake-notify.sh"
+
+state_dir="$tmp_dir/notify_target"
+mkdir -p "$state_dir"
+output=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO=normal_review \
+    GH_PR_NOTIFY_TARGET=12345 GH_PR_NOTIFY_THREAD=678 GH_PR_NOTIFY_SCRIPT="$tmp_dir/bin/fake-notify.sh" \
+    bash "$poller" 42 2 2>&1) || fail 'notify_target: poller exited non-zero'
+[ -f "$notify_log" ] || fail 'notify_target: no delivery attempted'
+notify_line=$(cat "$notify_log")
+assert_contains "$notify_line" 'args=12345 --thread 678' 'notify target and thread'
+assert_contains "$notify_line" 'checks_done=true' 'notify summary content'
+printf '%s\n' 'ok - completion notification delivered to configured chat/thread'
+
+rm -f "$notify_log"
+state_dir="$tmp_dir/notify_absent"
+mkdir -p "$state_dir"
+output=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO=normal_review \
+    GH_PR_NOTIFY_SCRIPT="$tmp_dir/bin/fake-notify.sh" \
+    bash "$poller" 42 2 2>&1) || fail 'notify_absent: poller exited non-zero'
+[ ! -f "$notify_log" ] || fail 'notify_absent: delivery attempted without a target'
+printf '%s\n' 'ok - no notification without GH_PR_NOTIFY_TARGET'
 
 printf '%s\n' 'PASS: poll-pr-review regression tests'
