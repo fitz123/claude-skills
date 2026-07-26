@@ -68,6 +68,12 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
+   When the poll cycle is launched from a Telegram chat/session, export
+   `GH_PR_NOTIFY_TARGET=<chat_id>` (and `GH_PR_NOTIFY_THREAD=<topic_id>` for a
+   forum topic) before starting a background poll — on completion the poller
+   delivers a one-line outcome summary back to that chat through the Minime
+   notify helper instead of leaving the result only in a log file. Without the
+   target variable nothing is sent (absent-safe).
 5. **Triage** the new findings (severity + verify-against-code). Repeat from 1.
 
 ### First PR-open invocation
