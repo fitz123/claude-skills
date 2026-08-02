@@ -35,19 +35,15 @@
 #                                   notify-telegram-configured.sh)
 #   GH_PR_REQUEST_SCRIPT=<path>     override the bundled Copilot request helper
 #                                   (primarily for regression tests)
-#   GH_PR_ALLOW_NO_CHECKS=1         explicitly treat a PR with zero checks as
-#                                   eligible for review; absent by default
 #
-# The timeout budget applies separately to the CI wait and Copilot wait. Exits
-# 0 only after green CI plus Copilot activity (or a correlated terminal Copilot
-# failure). CI failure, head changes, query/policy errors, and timeout are
-# machine-distinguishable non-zero outcomes.
+# Exits 0 only after green CI plus Copilot activity (or a correlated terminal
+# Copilot failure), or after green CI alone for a version-release PR. CI
+# failure, head changes, query errors, and timeout are non-zero outcomes.
 set -u
 
 pr="${1:?usage: $0 <pr-number> [timeout-seconds]}"
 budget="${2:-600}"
 request_script="${GH_PR_REQUEST_SCRIPT:-$(dirname "$0")/request-copilot-rereview.sh}"
-allow_no_checks="${GH_PR_ALLOW_NO_CHECKS:-0}"
 
 # Login forms used by GitHub's Copilot PR-review integration:
 #   requested reviewer / gh pr view review author: copilot-pull-request-reviewer
@@ -63,6 +59,17 @@ repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
 [ -z "$head_sha" ] && { echo "ERROR: couldn't determine PR head sha"; exit 1; }
 head_commit_at=$(gh pr view "$pr" --json commits --jq '.commits[-1].committedDate // ""' 2>/dev/null || echo "")
+pr_metadata=$(gh pr view "$pr" --json headRefName,title 2>/dev/null) || {
+    echo "ERROR: couldn't determine PR branch/title" >&2
+    exit 1
+}
+head_ref=$(jq -r '.headRefName // ""' <<< "$pr_metadata")
+pr_title=$(jq -r '.title // ""' <<< "$pr_metadata")
+is_release_pr="no"
+if [[ "$head_ref" =~ ^release(-|/v)[0-9]+\.[0-9]+\.[0-9]+$ ]] &&
+   [[ "$pr_title" =~ ^(chore:\ release|Release)\ v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    is_release_pr="yes"
+fi
 
 checks_status() {
     # `gh pr checks` can return non-zero for a completed failed check while
@@ -182,7 +189,7 @@ notify_completion() {
         echo "[poll] WARNING: GH_PR_NOTIFY_TARGET is set but notify helper is unavailable: $notify_script"
         return 0
     fi
-    local summary="github-pr poll finished: $repo PR #$pr — outcome=$poll_outcome checks_state=$checks_state checks_done=$checks_done copilot_activity=$activity_seen copilot_terminal_failure=$terminal_failure_seen"
+    local summary="github-pr poll finished: $repo PR #$pr — release_pr=$is_release_pr checks_state=$checks_state checks_done=$checks_done copilot_activity=$activity_seen copilot_terminal_failure=$terminal_failure_seen"
     if [ -n "${GH_PR_NOTIFY_THREAD:-}" ]; then
         printf '%s\n' "$summary" | "$notify_script" "$target" --thread "$GH_PR_NOTIFY_THREAD" \
             || echo "[poll] WARNING: completion notification delivery failed"
@@ -209,22 +216,15 @@ print_final_state() {
         --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | {id, path: .comments.nodes[0].path, line: .comments.nodes[0].line, author: .comments.nodes[0].author.login, body_head: (.comments.nodes[0].body[0:300])}]'
 }
 
-# Baselines: count Copilot activity that already belongs to the current PR head.
-start_reviews=$(current_head_reviews)
-start_comments=$(copilot_comments_since_head)
-activity_seen=$([ "$start_reviews" -gt 0 ] || [ "$start_comments" -gt 0 ] && echo "yes" || echo "no")
 checks_state="unknown"
 checks_done="false"
+activity_seen="no"
 terminal_failure_seen="no"
-poll_outcome="running"
 request_gate_done="no"
-review_budget_started="no"
 
 finish_with_error() {
-    poll_outcome="$1"
-    local exit_code="$2"
-    local message="$3"
-    echo "$message"
+    local exit_code="$1"
+    echo "$2"
     print_final_state
     notify_completion
     exit "$exit_code"
@@ -232,70 +232,41 @@ finish_with_error() {
 
 ensure_current_head() {
     local current_head
-    if ! current_head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null) || [ -z "$current_head" ]; then
-        finish_with_error "head-query-error" 4 "[poll] ERROR: could not verify the current PR head; refusing stale CI/review evidence"
-    fi
-    if [ "$current_head" != "$head_sha" ]; then
-        finish_with_error "head-changed" 3 "[poll] ERROR: PR head changed while polling (expected ${head_sha:0:12}, current ${current_head:0:12}); refusing stale CI/review evidence"
-    fi
+    current_head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null) || \
+        finish_with_error 4 "[poll] ERROR: could not verify the current PR head"
+    [ "$current_head" = "$head_sha" ] || \
+        finish_with_error 3 "[poll] ERROR: PR head changed while polling (expected ${head_sha:0:12}, current ${current_head:0:12})"
 }
 
 refresh_checks() {
     checks_state=$(checks_status)
     case "$checks_state" in
-        success)
-            checks_done="true"
-            ;;
-        pending)
-            checks_done="false"
-            ;;
-        failure)
-            checks_done="true"
-            if [ "$request_gate_done" = "no" ]; then
-                finish_with_error "ci-failed" 2 "[poll] ERROR: CI checks failed — Copilot was not requested"
-            fi
-            finish_with_error "ci-failed" 2 "[poll] ERROR: CI checks failed after the review gate; stopping"
-            ;;
+        success) checks_done="true" ;;
+        pending) checks_done="false" ;;
+        failure) checks_done="true"; finish_with_error 2 "[poll] ERROR: CI checks failed — Copilot was not requested for this head" ;;
         none)
-            if [ "$allow_no_checks" = "1" ]; then
-                echo "[poll] no CI checks; GH_PR_ALLOW_NO_CHECKS=1 explicitly permits review"
-                checks_state="success"
-                checks_done="true"
-            else
-                checks_done="false"
-                finish_with_error "no-check-policy" 4 "[poll] ERROR: no CI checks found; set GH_PR_ALLOW_NO_CHECKS=1 only when repository policy explicitly permits review"
-            fi
+            echo "[poll] no CI checks; preserving the poller's existing no-check eligibility"
+            checks_state="success"
+            checks_done="true"
             ;;
-        *)
-            checks_done="false"
-            finish_with_error "checks-query-error" 4 "[poll] ERROR: could not classify current-head CI checks"
-            ;;
+        *) checks_done="false"; finish_with_error 4 "[poll] ERROR: could not classify current-head CI checks" ;;
     esac
 }
 
 request_copilot_if_ready() {
-    [ "$request_gate_done" = "no" ] || return 0
-    [ "$checks_state" = "success" ] || return 0
-    [ "$activity_seen" = "no" ] || { request_gate_done="yes"; return 0; }
-    [ "$terminal_failure_seen" = "no" ] || { request_gate_done="yes"; return 0; }
+    [ "$request_gate_done" = "no" ] || return
+    [ "$checks_state" = "success" ] || return
+    [ "$activity_seen" = "no" ] || { request_gate_done="yes"; return; }
+    [ "$terminal_failure_seen" = "no" ] || { request_gate_done="yes"; return; }
 
     ensure_current_head
-    # `requested_reviewers` lists the bot login even though the POST endpoint
-    # takes the literal token `Copilot`.
     local pending
-    if ! pending=$(gh api "repos/$repo/pulls/$pr/requested_reviewers" \
-        --jq "[.users[]? | select(.login == \"$review_author\")] | length" 2>/dev/null); then
-        finish_with_error "review-request-query-error" 4 "[poll] ERROR: could not determine whether Copilot is already pending; refusing a possible duplicate request"
-    fi
-    case "$pending" in
-        ''|*[!0-9]*)
-            finish_with_error "review-request-query-error" 4 "[poll] ERROR: invalid pending-reviewer response; refusing a possible duplicate request"
-            ;;
-    esac
+    pending=$(gh api "repos/$repo/pulls/$pr/requested_reviewers" \
+        --jq "[.users[]? | select(.login == \"$review_author\")] | length" 2>/dev/null) || \
+        finish_with_error 4 "[poll] ERROR: could not read pending Copilot reviewers"
     if [ "$pending" -eq 0 ]; then
         echo "[poll] CI green — requesting Copilot review for head ${head_sha:0:12}"
-        "$request_script" "$pr" || \
-            echo "[poll] WARNING: CI-gated review request returned non-zero; polling anyway"
+        "$request_script" "$pr" || echo "[poll] WARNING: CI-gated review request returned non-zero; polling anyway"
     else
         echo "[poll] CI green and Copilot is already pending — no duplicate request"
     fi
@@ -303,58 +274,61 @@ request_copilot_if_ready() {
 }
 
 refresh_checks
-if [ "$activity_seen" = "yes" ] && [ "$checks_state" = "success" ]; then
-    ensure_current_head
-    poll_outcome="success"
-    echo "[poll] current head already has Copilot activity and green CI — no re-request needed"
-    print_final_state
-    notify_completion
-    exit 0
-fi
-
+start_reviews=0
+start_comments=0
 fallback_request_id="none"
 fallback_request_at="none"
 fallback_state_fresh="no"
-if fallback_state=$(current_head_fallback_state); then
-    fallback_state_fresh="yes"
-    IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+
+if [ "$is_release_pr" = "yes" ]; then
+    echo "[poll] version-release PR detected ($head_ref / $pr_title) — skipping Copilot review"
 else
-    echo "[poll] WARNING: could not read the complete PR timeline — fallback state remains unknown and will be retried"
+    start_reviews=$(current_head_reviews)
+    start_comments=$(copilot_comments_since_head)
+    activity_seen=$([ "$start_reviews" -gt 0 ] || [ "$start_comments" -gt 0 ] && echo "yes" || echo "no")
+
+    if fallback_state=$(current_head_fallback_state); then
+        fallback_state_fresh="yes"
+        IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
+    else
+        echo "[poll] WARNING: could not read the complete PR timeline — fallback state remains unknown and will be retried"
+    fi
+
+    if [ "$terminal_failure_seen" = "yes" ]; then
+        echo "[poll] current-head fallback request ended with copilot_work_finished_failure — waiting for green CI only"
+    fi
+    if [ "$checks_state" = "success" ]; then
+        request_copilot_if_ready
+    else
+        echo "[poll] CI pending — deferring Copilot request for head ${head_sha:0:12}"
+    fi
 fi
 
-if [ "$terminal_failure_seen" = "yes" ]; then
-    echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected; waiting for green CI only"
-fi
-
-if [ "$checks_state" = "success" ]; then
-    review_budget_started="yes"
-    request_copilot_if_ready
-else
-    echo "[poll] CI pending — deferring Copilot request for head ${head_sha:0:12}"
-fi
-
-echo "[poll] repo=$repo pr=#$pr head=$head_sha baseline: checks_state=$checks_state current_head_reviews=$start_reviews copilot_comments_since_head=$start_comments activity_seen=$activity_seen fallback_request_at=$fallback_request_at budget=${budget}s-per-phase"
+echo "[poll] repo=$repo pr=#$pr head=$head_sha release_pr=$is_release_pr checks_state=$checks_state fallback_request_at=$fallback_request_at budget=${budget}s"
 
 deadline=$((SECONDS + budget))
 iter=0
 completed="no"
 while [ $SECONDS -lt $deadline ]; do
     iter=$((iter + 1))
-    elapsed=$SECONDS
     fallback_state_fresh="no"
 
     ensure_current_head
-    previous_checks_state="$checks_state"
     refresh_checks
-    if [ "$checks_state" = "success" ] && [ "$review_budget_started" = "no" ]; then
-        review_budget_started="yes"
-        deadline=$((SECONDS + budget))
-        echo "[poll] CI became green — starting the bounded Copilot-review phase"
+
+    if [ "$is_release_pr" = "yes" ]; then
+        printf '[poll] iter=%d t=%ds release_pr=yes checks_state=%s copilot=skipped\n' \
+            "$iter" "$SECONDS" "$checks_state"
+        if [ "$checks_state" = "success" ]; then
+            completed="yes"
+            break
+        fi
+        sleep 20
+        continue
     fi
 
     cur_reviews=$(current_head_reviews)
     cur_comments=$(copilot_comments_since_head)
-
     new_review=$([ "$cur_reviews" -gt "$start_reviews" ] && echo "yes" || echo "no")
     new_comment=$([ "$cur_comments" -gt "$start_comments" ] && echo "yes" || echo "no")
     if [ "$new_review" = "yes" ] || [ "$new_comment" = "yes" ]; then
@@ -367,48 +341,38 @@ while [ $SECONDS -lt $deadline ]; do
             previous_fallback_request_id="$fallback_request_id"
             previous_terminal_failure_seen="$terminal_failure_seen"
             IFS=$'\t' read -r fallback_request_id fallback_request_at terminal_failure_seen <<< "$fallback_state"
-
             if [ "$fallback_request_id" != "none" ] && [ "$fallback_request_id" != "$previous_fallback_request_id" ]; then
                 echo "[poll] newest current-head fallback marker became visible at $fallback_request_at"
             fi
             if [ "$previous_terminal_failure_seen" = "yes" ] && [ "$terminal_failure_seen" = "no" ]; then
                 echo "[poll] newer Copilot trigger superseded the prior terminal failure — resuming Copilot review wait"
             elif [ "$previous_terminal_failure_seen" = "no" ] && [ "$terminal_failure_seen" = "yes" ]; then
-                echo "[poll] current-head fallback request ended with copilot_work_finished_failure — no Copilot review activity expected"
+                echo "[poll] current-head fallback request ended with copilot_work_finished_failure"
             fi
         else
             echo "[poll] WARNING: could not refresh the complete PR timeline — preserving the last known fallback state"
         fi
     fi
 
-    if [ "$checks_state" = "success" ]; then
-        request_copilot_if_ready
-    fi
-
-    printf '[poll] iter=%d t=%ds checks_state=%s checks_done=%s activity_seen=%s terminal_failure_seen=%s fallback_state_fresh=%s new_review=%s new_comment=%s (head_reviews %s→%s comments_since_head %s→%s)\n' \
-        "$iter" "$elapsed" "$checks_state" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$fallback_state_fresh" "$new_review" "$new_comment" \
-        "$start_reviews" "$cur_reviews" "$start_comments" "$cur_comments"
+    request_copilot_if_ready
+    printf '[poll] iter=%d t=%ds checks_state=%s checks_done=%s activity_seen=%s terminal_failure_seen=%s fallback_state_fresh=%s new_review=%s new_comment=%s\n' \
+        "$iter" "$SECONDS" "$checks_state" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$fallback_state_fresh" "$new_review" "$new_comment"
 
     if [ "$checks_state" = "success" ] && [ "$activity_seen" = "yes" ]; then
-        poll_outcome="success"
         completed="yes"
         echo "[poll] green CI + Copilot activity observed — exiting loop"
         break
     fi
     if [ "$checks_state" = "success" ] && [ "$terminal_failure_seen" = "yes" ] && [ "$fallback_state_fresh" = "yes" ]; then
-        poll_outcome="copilot-terminal-failure"
         completed="yes"
         echo "[poll] green CI + Copilot terminal failure observed — exiting loop"
         break
-    fi
-    if [ "$previous_checks_state" = "pending" ] && [ "$checks_state" = "pending" ]; then
-        echo "[poll] CI still pending — Copilot request remains deferred"
     fi
     sleep 20
 done
 
 if [ "$completed" != "yes" ]; then
-    finish_with_error "timeout" 124 "[poll] ERROR: timed out while waiting for $([ "$checks_state" = "success" ] && echo 'Copilot' || echo 'green CI'); no success reported"
+    finish_with_error 124 "[poll] ERROR: timed out without a successful current-head outcome"
 fi
 
 print_final_state

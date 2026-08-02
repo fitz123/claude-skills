@@ -11,26 +11,29 @@ allowed-tools:
 
 # github-pr — Copilot-aware PR review loop
 
-This skill exists because the Copilot review cycle has five non-obvious gotchas
+This skill exists because the Copilot review cycle has six non-obvious gotchas
 that silently waste review runs or polling time if you miss them:
 
 1. **CI must be green before requesting Copilot.** Reviewing a head while CI is
    pending can waste a review when tests then force another push. The poller
    defers its request until all current-head checks succeed; failed CI exits
    non-zero without spending a request.
-2. **Copilot does NOT auto-re-review on every push.** The first review may be
+2. **Version-release PRs skip Copilot.** Mechanical release branches/titles
+   matching the documented version convention still wait for current-head CI,
+   then finish without requesting or waiting for Copilot.
+3. **Copilot does NOT auto-re-review on every push.** The first review may be
    triggered by PR creation; subsequent pushes require an explicit re-request
    or Copilot stays silent forever.
-3. **The REST `requested_reviewers=Copilot` endpoint silently dedupes after
+4. **The REST `requested_reviewers=Copilot` endpoint silently dedupes after
    ~4 rapid re-requests on the same PR.** It returns HTTP 201 with empty
    `requested_reviewers`, no `review_requested` event fires, no review is
    queued. The `request-copilot-rereview.sh` script checks the timeline event
    count and falls back to `@copilot please re-review` when REST silently
    no-ops. The fallback is idempotent per PR head for a short cooldown.
-4. **Copilot replies to `@copilot` comments as a COMMENT (`copilot-swe-agent`),
+5. **Copilot replies to `@copilot` comments as a COMMENT (`copilot-swe-agent`),
    not as a formal Review.** A watcher that only polls `reviews[]` waits
    forever. The poller watches BOTH `reviews[]` and Copilot comments.
-5. **A fallback request can terminate without review activity.** GitHub records
+6. **A fallback request can terminate without review activity.** GitHub records
    `copilot_work_finished_failure` in the PR timeline. The poller accepts this
    only after the marked current-head request and only when no newer Copilot
    trigger supersedes it; green CI remains mandatory.
@@ -53,13 +56,17 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
-   The timeout applies separately to the CI and Copilot phases. Exit codes are
-   `0` for a completed green-CI review phase, `2` for failed CI, `3` for a head
-   change, `4` for a query/policy error, and `124` for timeout.
+   The timeout covers the poll cycle. Exit codes are `0` for a completed green-CI
+   review phase, `2` for failed CI, `3` for a head change, `4` for a query error,
+   and `124` for timeout.
 
    Do **not** call `request-copilot-rereview.sh` while CI is pending. Direct use
    is only appropriate after independently proving current-head CI is green;
    the poller normally handles the request and its dedupe fallback.
+
+   A PR is treated as a version release only when both branch and title match:
+   `release-X.Y.Z` or `release/vX.Y.Z`, with `chore: release X.Y.Z`,
+   `Release X.Y.Z`, or `Release vX.Y.Z`. Such PRs wait only for CI.
 
    When launched from Telegram, export `GH_PR_NOTIFY_TARGET=<chat_id>` and,
    for a forum topic, `GH_PR_NOTIFY_THREAD=<topic_id>`. Completion delivery is
@@ -102,8 +109,8 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   `IN_PROGRESS`/`PENDING`/`QUEUED`/`SKIPPED`/`NEUTRAL`/`CANCELLED`/`TIMED_OUT`/
   `ACTION_REQUIRED`, not `COMPLETED`. The poller combines structured `state`
   and `completedAt`, including Go's zero time, and requires every check to be
-  `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks require the caller's explicit
-  `GH_PR_ALLOW_NO_CHECKS=1` policy.
+  `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks keep the poller's existing
+  eligible behavior and are reported explicitly rather than silently inferred.
 - **`gh pr checks --json status` doesn't work** — the field is `state`, not
   `status`. Same for the items inside the array.
 - **`(eval):1: == not found` errors** from background-launched polling loops

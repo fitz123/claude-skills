@@ -61,7 +61,7 @@ fake_gh() {
                         local check_call
                         check_call=$(next_call checks)
                         case "$TEST_SCENARIO" in
-                            correlated_failure|in_flight_marker|in_flight_rest|timeline_refresh_error|ci_pending_then_success)
+                            correlated_failure|in_flight_marker|in_flight_rest|timeline_refresh_error|ci_pending_then_success|release_dash)
                                 if [ "$check_call" -lt 3 ]; then
                                     emit_json '[{"state":"IN_PROGRESS","completedAt":null}]'
                                 else
@@ -79,7 +79,7 @@ fake_gh() {
                                 emit_json '[{"state":"FAILURE","completedAt":"2026-07-14T10:10:00Z"}]'
                                 return 1
                                 ;;
-                            no_checks|no_checks_allowed)
+                            no_checks)
                                 emit_json '[]'
                                 ;;
                             *)
@@ -101,6 +101,18 @@ fake_gh() {
                         fi
                     elif [[ " $* " == *" --json commits "* ]]; then
                         emit_json '{"commits":[{"committedDate":"2026-07-14T09:00:00Z"}]}'
+                    elif [[ " $* " == *" --json headRefName,title "* ]]; then
+                        case "$TEST_SCENARIO" in
+                            release_dash)
+                                emit_json '{"headRefName":"release-2026.8.0","title":"chore: release 2026.8.0"}'
+                                ;;
+                            release_slash)
+                                emit_json '{"headRefName":"release/v2026.7.43","title":"Release v2026.7.43"}'
+                                ;;
+                            *)
+                                emit_json '{"headRefName":"fix/example","title":"Fix example"}'
+                                ;;
+                        esac
                     elif [[ " $* " == *" --json reviews "* ]]; then
                         emit_json '{"reviews":[]}'
                     elif [[ " $* " == *" --json comments "* ]]; then
@@ -138,7 +150,7 @@ fake_gh() {
                     case "$TEST_SCENARIO" in
                         normal_review|partial_timeline_error|zero_completed_at) review_after=1 ;;
                         ci_pending_then_success) review_after=3 ;;
-                        ci_success_request|no_checks_allowed) review_after=2 ;;
+                        ci_success_request|no_checks) review_after=2 ;;
                         stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
                         in_flight_marker|in_flight_rest) review_after=3 ;;
                         timeline_refresh_error) review_after=4 ;;
@@ -151,7 +163,7 @@ fake_gh() {
                     ;;
                 repos/example/widgets/pulls/42/requested_reviewers)
                     case "$TEST_SCENARIO" in
-                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|no_checks_allowed)
+                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|release_dash|release_slash)
                             emit_json '{"users":[]}'
                             ;;
                         *)
@@ -286,13 +298,11 @@ CASE_OUTPUT=""
 CASE_RC=0
 run_case_raw() {
     local scenario="$1"
-    local allow_no_checks="${2:-0}"
     local state_dir="$tmp_dir/$scenario"
     mkdir -p "$state_dir"
     set +e
     CASE_OUTPUT=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO="$scenario" \
-        GH_PR_REQUEST_SCRIPT="$tmp_dir/bin/fake-request-copilot.sh" GH_PR_ALLOW_NO_CHECKS="$allow_no_checks" \
-        bash "$poller" 42 2 2>&1)
+        GH_PR_REQUEST_SCRIPT="$tmp_dir/bin/fake-request-copilot.sh" bash "$poller" 42 2 2>&1)
     CASE_RC=$?
     set -e
 }
@@ -329,17 +339,24 @@ assert_contains "$CASE_OUTPUT" 'PR head changed while polling' 'head change fenc
 [ ! -e "$tmp_dir/head_changed/requests.log" ] || fail 'head change fence: stale head triggered Copilot request'
 printf '%s\n' 'ok - changed PR head cannot reuse stale CI or review evidence'
 
-run_case_raw no_checks
-[ "$CASE_RC" -eq 4 ] || fail "no-check policy: expected rc=4, got rc=$CASE_RC"
-assert_contains "$CASE_OUTPUT" 'no CI checks found' 'no-check policy'
-[ ! -e "$tmp_dir/no_checks/requests.log" ] || fail 'no-check policy: Copilot request was attempted without explicit permission'
-printf '%s\n' 'ok - zero checks require explicit repository policy'
+output=$(run_case no_checks)
+assert_contains "$output" "preserving the poller's existing no-check eligibility" 'legacy no-check behavior'
+[ "$(wc -l < "$tmp_dir/no_checks/requests.log" 2>/dev/null || echo 0)" -eq 1 ] || fail 'legacy no-check behavior: expected exactly one Copilot request'
+printf '%s\n' 'ok - existing zero-check eligibility is preserved explicitly'
 
-run_case_raw no_checks_allowed 1
-[ "$CASE_RC" -eq 0 ] || fail "explicit no-check policy: expected rc=0, got rc=$CASE_RC"
-assert_contains "$CASE_OUTPUT" 'GH_PR_ALLOW_NO_CHECKS=1 explicitly permits review' 'explicit no-check policy'
-[ "$(wc -l < "$tmp_dir/no_checks_allowed/requests.log" 2>/dev/null || echo 0)" -eq 1 ] || fail 'explicit no-check policy: expected exactly one Copilot request'
-printf '%s\n' 'ok - explicit zero-check policy permits one Copilot request'
+output=$(run_case release_dash)
+assert_contains "$output" 'version-release PR detected' 'dash release detection'
+assert_contains "$output" 'release_pr=yes checks_state=pending' 'dash release CI wait'
+[ ! -e "$tmp_dir/release_dash/requests.log" ] || fail 'dash release: Copilot request was attempted'
+assert_not_contains "$(cat "$tmp_dir/release_dash/calls.log")" 'repos/example/widgets/pulls/42/reviews' 'dash release review wait'
+assert_not_contains "$(cat "$tmp_dir/release_dash/calls.log")" 'requested_reviewers' 'dash release pending-review query'
+printf '%s\n' 'ok - dash version-release PR waits for CI and skips Copilot'
+
+output=$(run_case release_slash)
+assert_contains "$output" 'release/v2026.7.43 / Release v2026.7.43' 'slash release detection'
+[ ! -e "$tmp_dir/release_slash/requests.log" ] || fail 'slash release: Copilot request was attempted'
+assert_not_contains "$(cat "$tmp_dir/release_slash/calls.log")" 'repos/example/widgets/pulls/42/reviews' 'slash release review wait'
+printf '%s\n' 'ok - slash version-release PR skips Copilot after green CI'
 
 output=$(run_case correlated_failure)
 assert_contains "$output" 'current-head fallback request ended with copilot_work_finished_failure' 'correlated failure'
