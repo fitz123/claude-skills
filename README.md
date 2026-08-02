@@ -47,7 +47,7 @@ Requires the `codex` CLI on `PATH` for review phase 3 (skipped gracefully if mis
 
 ### [`github-pr`](plugin/skills/github-pr/SKILL.md)
 
-Copilot-aware GitHub PR review loop. Polls for Copilot reviews (with required re-request between rounds), resolves resolved threads, and iterates until the PR is clean. Wraps `gh` CLI + GraphQL.
+CI-first GitHub PR review loop. Waits for green current-head checks before requesting Copilot, resolves addressed threads, and repeats the same gate after every review-driven push. Wraps `gh` CLI + GraphQL.
 
 ```
 /github-pr 42

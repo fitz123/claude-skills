@@ -1,6 +1,6 @@
 ---
 name: github-pr
-description: "Workflow + scripts for an iterative GitHub PR review cycle: create PR, watch for Copilot + CI, address findings, re-request Copilot (REQUIRED — Copilot does not auto-re-review on each push), resolve threads, repeat until clean. Use when iterating on a PR with the Copilot Code Review bot. Triggered by 'github pr', 'watch pr', 're-request copilot', 'resolve pr threads', or any PR-cycle handoff."
+description: "Workflow + scripts for a CI-first iterative GitHub PR review cycle: wait for green current-head CI, request Copilot, address findings, and repeat without reviewing known-bad heads. Use when iterating on a PR with the Copilot Code Review bot. Triggered by 'github pr', 'watch pr', 're-request copilot', 'resolve pr threads', or any PR-cycle handoff."
 argument-hint: "[pr-number]"
 allowed-tools:
   - Bash(gh:*)
@@ -11,30 +11,29 @@ allowed-tools:
 
 # github-pr — Copilot-aware PR review loop
 
-This skill exists because the Copilot review cycle has four non-obvious gotchas
-that silently waste minutes of polling each round if you miss them:
+This skill exists because the Copilot review cycle has five non-obvious gotchas
+that silently waste review runs or polling time if you miss them:
 
-1. **Copilot does NOT auto-re-review on every push.** The first review is
+1. **CI must be green before requesting Copilot.** Reviewing a head while CI is
+   pending can waste a review when tests then force another push. The poller
+   defers its request until all current-head checks succeed; failed CI exits
+   non-zero without spending a request.
+2. **Copilot does NOT auto-re-review on every push.** The first review may be
    triggered by PR creation; subsequent pushes require an explicit re-request
    or Copilot stays silent forever.
-2. **The REST `requested_reviewers=Copilot` endpoint silently dedupes after
+3. **The REST `requested_reviewers=Copilot` endpoint silently dedupes after
    ~4 rapid re-requests on the same PR.** It returns HTTP 201 with empty
    `requested_reviewers`, no `review_requested` event fires, no review is
-   queued. The `request-copilot-rereview.sh` script in this skill checks the
-   timeline event count and falls back to `@copilot please re-review` comment
-   when REST silently no-ops. The fallback comment is idempotent per PR head
-   for a short cooldown, so explicit re-request + poller pre-flight does not
-   spam duplicate `@copilot` comments.
-3. **Copilot replies to `@copilot` comments as a COMMENT (`copilot-swe-agent`),
+   queued. The `request-copilot-rereview.sh` script checks the timeline event
+   count and falls back to `@copilot please re-review` when REST silently
+   no-ops. The fallback is idempotent per PR head for a short cooldown.
+4. **Copilot replies to `@copilot` comments as a COMMENT (`copilot-swe-agent`),
    not as a formal Review.** A watcher that only polls `reviews[]` waits
-   forever. The poller in this skill watches BOTH `reviews[]` and Copilot
-   comments since baseline.
-4. **A fallback request can terminate without any review activity.** GitHub
-   records `copilot_work_finished_failure` in the PR timeline when Copilot
-   Agent stops this way, but does not expose the UI's detailed reason through
-   that API. The poller accepts this only after the marked fallback request for
-   the current head and only when no newer Copilot trigger supersedes it,
-   reports the no-review outcome, and then waits for CI only.
+   forever. The poller watches BOTH `reviews[]` and Copilot comments.
+5. **A fallback request can terminate without review activity.** GitHub records
+   `copilot_work_finished_failure` in the PR timeline. The poller accepts this
+   only after the marked current-head request and only when no newer Copilot
+   trigger supersedes it; green CI remains mandatory.
 
 Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
@@ -47,48 +46,34 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/resolve-all-threads.sh <pr-number>
    ```
-3. **Re-request Copilot** — optional now, the poller does a pre-flight check
-   and re-requests automatically if Copilot isn't a pending reviewer. Call
-   this explicitly only when you want the re-request to happen before
-   starting the (potentially backgrounded) poller, for clarity in logs. The
-   script skips a duplicate fallback comment if one already exists for the
-   current head within `COPILOT_REREVIEW_COOLDOWN_SECONDS` (default 1800):
-   ```
-   ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/request-copilot-rereview.sh <pr-number>
-   ```
-4. **Poll for the current-head review + CI**. Run in background (`run_in_background: true`)
-   so the agent can do other work; heartbeat lines confirm liveness. The
-   poller first checks whether Copilot already reviewed the PR's current head
-   SHA; if yes, it treats that as success and only waits for CI. Only when
-   there is neither current-head Copilot activity nor a pending Copilot reviewer
-   does it invoke `request-copilot-rereview.sh`, so step 3 is no longer required.
-   If the marked fallback request ends in `copilot_work_finished_failure`, the
-   poller reports that terminal no-review outcome and still does not return
-   until all CI checks have completed (or the overall timeout is reached):
+3. **Start the CI-gated poller** in background. It waits while current-head CI
+   is pending, exits non-zero without requesting Copilot if CI fails, and only
+   requests Copilot after CI succeeds. It then waits for current-head Copilot
+   activity or a correlated terminal no-review outcome:
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh <pr-number>
    ```
-   When the poll cycle is launched from a Telegram chat/session, export
-   `GH_PR_NOTIFY_TARGET=<chat_id>` (and `GH_PR_NOTIFY_THREAD=<topic_id>` for a
-   forum topic) before starting a background poll — on completion the poller
-   delivers a one-line outcome summary back to that chat through the Minime
-   notify helper instead of leaving the result only in a log file. Without the
-   target variable nothing is sent (absent-safe).
-5. **Triage** the new findings (severity + verify-against-code). Repeat from 1.
+   The timeout applies separately to the CI and Copilot phases. Exit codes are
+   `0` for a completed green-CI review phase, `2` for failed CI, `3` for a head
+   change, `4` for a query/policy error, and `124` for timeout.
+
+   Do **not** call `request-copilot-rereview.sh` while CI is pending. Direct use
+   is only appropriate after independently proving current-head CI is green;
+   the poller normally handles the request and its dedupe fallback.
+
+   When launched from Telegram, export `GH_PR_NOTIFY_TARGET=<chat_id>` and,
+   for a forum topic, `GH_PR_NOTIFY_THREAD=<topic_id>`. Completion delivery is
+   absent-safe and does not replace the parent task's terminal report.
+4. **Triage** findings (severity + verify against code), push fixes, and repeat
+   from step 1 so every re-review is gated by green current-head CI.
 
 ### First PR-open invocation
 
-For the very first poll right after `gh pr create`, the pre-flight in step 4
-covers three failure modes silently:
-- Copilot already reviewed the current head before the poller started; the
-  poller exits cleanly once CI is done instead of waiting for "one more" review.
-- Copilot Code Review is enabled but the bot hasn't been auto-requested yet
-  (race during PR creation).
-- The repo doesn't auto-request Copilot on PR open (some org-level Copilot
-  settings disable this), and the user expected an automatic review.
-
-The poller requests Copilot only after ruling out an existing current-head
-Copilot review/comment.
+For the first poll after `gh pr create`, repository-level settings may already
+have auto-requested Copilot. The poller never adds another request while CI is
+pending. Once CI is green, it accepts existing current-head Copilot activity or
+an existing pending reviewer; otherwise it requests Copilot exactly once.
+Repository-level automatic first-review settings are outside this skill.
 
 ## Useful one-liners (no scripts needed)
 
@@ -115,8 +100,10 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
     review will fire — see "silently dedupes" gotcha above.
 - **CI state field**: `gh pr checks --json state` returns `SUCCESS`/`FAILURE`/
   `IN_PROGRESS`/`PENDING`/`QUEUED`/`SKIPPED`/`NEUTRAL`/`CANCELLED`/`TIMED_OUT`/
-  `ACTION_REQUIRED`. NOT `COMPLETED` (that's from a different API). For
-  "all settled" use `--json completedAt` + `all(. != null and . != "")`.
+  `ACTION_REQUIRED`, not `COMPLETED`. The poller combines structured `state`
+  and `completedAt`, including Go's zero time, and requires every check to be
+  `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks require the caller's explicit
+  `GH_PR_ALLOW_NO_CHECKS=1` policy.
 - **`gh pr checks --json status` doesn't work** — the field is `state`, not
   `status`. Same for the items inside the array.
 - **`(eval):1: == not found` errors** from background-launched polling loops
@@ -132,9 +119,9 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   trigger supersedes that fallback in timeline order. It re-evaluates that
   ordering only from complete timeline snapshots, preserves the last known
   state for diagnostics across transient lookup failures, requires a fresh
-  complete snapshot before exiting on terminal evidence, continues until CI
-  settles, and callers should treat the explicit terminal-failure line as a
-  no-review outcome rather than as review approval.
+  complete snapshot before exiting on terminal evidence, still requires green
+  CI, and callers should treat the explicit terminal-failure line as a
+  no-review outcome rather than review approval.
 - **Empty `start_*` vs typo guard.** If `gh pr view` errors transiently,
   capture in the loop body might come back empty. The poller falls back to the
   baseline value to avoid bash's `[ "" -gt 0 ]` error.
