@@ -298,7 +298,7 @@ If nothing found: NO ISSUES FOUND.
 **4b.** Run via `Bash` tool with `run_in_background: true`:
 
 ```
-codex exec -c model_reasoning_effort=xhigh "<prompt>"
+codex exec -c model_reasoning_effort=high "<prompt>"
 ```
 
 Do NOT pin `-m` (let codex use its config default). If codex returns an auth/model error (e.g. "model is not supported"), report `Codex review: skipped (model error)`, append `echo "review phase 3: codex error — skipping remainder" >> <PROGRESS_FILE>`, proceed to Step 5 — do NOT try alternative model names.
