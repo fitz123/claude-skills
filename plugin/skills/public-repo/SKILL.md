@@ -111,7 +111,7 @@ Enabling is UI-only — no REST/GraphQL endpoint exposes the "Keep my email addr
 **Best-effort detection only.** `gh api /user --jq .email` returns the user's *public profile email* field, which is **not the same** as the commit-email-privacy toggle:
 
 - A user can have `email: null` AND still have privacy off (no public email set yet).
-- A user can have `email: "alugovoi@..."` AND have commit-email-privacy on (public profile email + private commit email).
+- A user can have `email: "user@example.com"` AND have commit-email-privacy on (public profile email + private commit email).
 
 So treat this as a *hint*, not proof:
 
