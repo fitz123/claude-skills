@@ -20,6 +20,10 @@
 # request, unless a newer Copilot trigger supersedes it, lets the poller stop
 # waiting for review activity while still requiring green CI.
 #
+# Zero checks remain pending unless GH_PR_ALLOW_NO_CHECKS=1 explicitly declares
+# the caller-established repository no-CI policy. No other value opts in; this
+# exception permits review without claiming green CI or review approval.
+#
 # Usage:
 #   poll-pr-review.sh <pr-number> [timeout-seconds]
 #   poll-pr-review.sh 15
@@ -39,6 +43,7 @@
 # Exits 0 only after green CI plus Copilot activity (or a correlated terminal
 # Copilot failure), or after green CI alone for a version-release PR. CI
 # failure, head changes, query errors, and timeout are non-zero outcomes.
+# GH_PR_ALLOW_NO_CHECKS=1 permits the same outcomes under explicit no-CI policy.
 set -u
 
 pr="${1:?usage: $0 <pr-number> [timeout-seconds]}"
@@ -232,6 +237,7 @@ print_final_state() {
 }
 
 checks_state="unknown"
+checks_summary="green CI"
 checks_done="false"
 activity_seen="no"
 terminal_failure_seen="no"
@@ -255,14 +261,21 @@ ensure_current_head() {
 
 refresh_checks() {
     checks_state=$(checks_status)
+    checks_summary="green CI"
     case "$checks_state" in
         success) checks_done="true" ;;
         pending) checks_done="false" ;;
         failure) checks_done="true"; finish_with_error 2 "[poll] ERROR: CI checks failed — Copilot was not requested for this head" ;;
         none)
-            echo "[poll] no CI checks; preserving the poller's existing no-check eligibility"
-            checks_state="success"
-            checks_done="true"
+            if [ "${GH_PR_ALLOW_NO_CHECKS:-}" = "1" ]; then
+                echo "[poll] no CI checks; eligible under explicit no-CI policy"
+                checks_summary="explicit no-CI policy"
+                checks_done="true"
+            else
+                echo "[poll] no CI checks; pending without GH_PR_ALLOW_NO_CHECKS=1"
+                checks_state="pending"
+                checks_done="false"
+            fi
             ;;
         *) checks_done="false"; finish_with_error 4 "[poll] ERROR: could not classify current-head CI checks" ;;
     esac
@@ -270,7 +283,7 @@ refresh_checks() {
 
 request_copilot_if_ready() {
     [ "$request_gate_done" = "no" ] || return
-    [ "$checks_state" = "success" ] || return
+    [ "$checks_done" = "true" ] || return
     [ "$activity_seen" = "no" ] || { request_gate_done="yes"; return; }
     [ "$terminal_failure_seen" = "no" ] || { request_gate_done="yes"; return; }
 
@@ -279,11 +292,13 @@ request_copilot_if_ready() {
     pending=$(gh api "repos/$repo/pulls/$pr/requested_reviewers" \
         --jq "[.users[]? | select(.login == \"$review_author\")] | length" 2>/dev/null) || \
         finish_with_error 4 "[poll] ERROR: could not read pending Copilot reviewers"
+    local request_basis="CI green"
+    [ "$checks_state" != "none" ] || request_basis="explicit no-CI policy"
     if [ "$pending" -eq 0 ]; then
-        echo "[poll] CI green — requesting Copilot review for head ${head_sha:0:12}"
+        echo "[poll] $request_basis — requesting Copilot review for head ${head_sha:0:12}"
         "$request_script" "$pr" || echo "[poll] WARNING: CI-gated review request returned non-zero; polling anyway"
     else
-        echo "[poll] CI green and Copilot is already pending — no duplicate request"
+        echo "[poll] $request_basis and Copilot is already pending — no duplicate request"
     fi
     request_gate_done="yes"
 }
@@ -310,9 +325,9 @@ else
     fi
 
     if [ "$terminal_failure_seen" = "yes" ]; then
-        echo "[poll] current-head fallback request ended with copilot_work_finished_failure — waiting for green CI only"
+        echo "[poll] current-head fallback request ended with copilot_work_finished_failure — waiting for $checks_summary only"
     fi
-    if [ "$checks_state" = "success" ]; then
+    if [ "$checks_done" = "true" ]; then
         request_copilot_if_ready
     else
         echo "[poll] CI pending — deferring Copilot request for head ${head_sha:0:12}"
@@ -334,7 +349,7 @@ while [ $SECONDS -lt $deadline ]; do
     if [ "$is_release_pr" = "yes" ]; then
         printf '[poll] iter=%d t=%ds release_pr=yes checks_state=%s copilot=skipped\n' \
             "$iter" "$SECONDS" "$checks_state"
-        if [ "$checks_state" = "success" ]; then
+        if [ "$checks_done" = "true" ]; then
             completed="yes"
             break
         fi
@@ -373,14 +388,14 @@ while [ $SECONDS -lt $deadline ]; do
     printf '[poll] iter=%d t=%ds checks_state=%s checks_done=%s activity_seen=%s terminal_failure_seen=%s fallback_state_fresh=%s new_review=%s new_comment=%s\n' \
         "$iter" "$SECONDS" "$checks_state" "$checks_done" "$activity_seen" "$terminal_failure_seen" "$fallback_state_fresh" "$new_review" "$new_comment"
 
-    if [ "$checks_state" = "success" ] && [ "$activity_seen" = "yes" ]; then
+    if [ "$checks_done" = "true" ] && [ "$activity_seen" = "yes" ]; then
         completed="yes"
-        echo "[poll] green CI + Copilot activity observed — exiting loop"
+        echo "[poll] $checks_summary + Copilot activity observed — exiting loop"
         break
     fi
-    if [ "$checks_state" = "success" ] && [ "$terminal_failure_seen" = "yes" ] && [ "$fallback_state_fresh" = "yes" ]; then
+    if [ "$checks_done" = "true" ] && [ "$terminal_failure_seen" = "yes" ] && [ "$fallback_state_fresh" = "yes" ]; then
         completed="yes"
-        echo "[poll] green CI + Copilot terminal failure observed — exiting loop"
+        echo "[poll] $checks_summary + Copilot terminal failure observed — exiting loop"
         break
     fi
     sleep 20
