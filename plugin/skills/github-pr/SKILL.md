@@ -110,7 +110,14 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   `ACTION_REQUIRED`, not `COMPLETED`. The poller combines structured `state`
   and `completedAt`, including Go's zero time, and requires every check to be
   `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks keep the poller's existing
-  eligible behavior and are reported explicitly rather than silently inferred.
+  eligibility only when the caller has established the repository's zero-CI
+  policy. The caller must verify that policy before relying on this path;
+  absence of checks is neither green CI nor review approval. When `gh pr checks`
+  emits empty stdout (including its no-checks exit code 1), the poller requires
+  a successful `gh pr view --json headRefOid,statusCheckRollup` returning one
+  object with the exact current head and an empty rollup. Other confirmation
+  results are query errors. This snapshot does not solve the race before CI
+  registers checks; callers expecting CI must not rely on zero-check eligibility.
 - **`gh pr checks --json status` doesn't work** — the field is `state`, not
   `status`. Same for the items inside the array.
 - **`(eval):1: == not found` errors** from background-launched polling loops

@@ -79,6 +79,14 @@ fake_gh() {
                                 emit_json '[{"state":"FAILURE","completedAt":"2026-07-14T10:10:00Z"}]'
                                 return 1
                                 ;;
+                            empty_checks_*)
+                                printf '%s\n' 'no checks reported on the branch' >&2
+                                return 1
+                                ;;
+                            malformed_checks)
+                                printf '%s\n' 'not JSON'
+                                return 1
+                                ;;
                             no_checks)
                                 emit_json '[]'
                                 ;;
@@ -91,7 +99,39 @@ fake_gh() {
                     fi
                     ;;
                 view)
-                    if [[ " $* " == *" --json headRefOid "* ]]; then
+                    if [[ " $* " == *" --json headRefOid,statusCheckRollup "* ]]; then
+                        case "$TEST_SCENARIO" in
+                            empty_checks_failed)
+                                return 1
+                                ;;
+                            empty_checks_failed_json)
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[]}"
+                                return 1
+                                ;;
+                            empty_checks_nonempty)
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[{\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}]}"
+                                ;;
+                            empty_checks_malformed)
+                                printf '%s\n' 'not JSON'
+                                ;;
+                            empty_checks_wrong_head)
+                                emit_json '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","statusCheckRollup":[]}'
+                                ;;
+                            empty_checks_null)
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":null}"
+                                ;;
+                            empty_checks_missing)
+                                emit_json "{\"headRefOid\":\"$head_sha\"}"
+                                ;;
+                            empty_checks_multiple)
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[]}"
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[]}"
+                                ;;
+                            *)
+                                emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[]}"
+                                ;;
+                        esac
+                    elif [[ " $* " == *" --json headRefOid "* ]]; then
                         local head_call
                         head_call=$(next_call head)
                         if [ "$TEST_SCENARIO" = "head_changed" ] && [ "$head_call" -gt 1 ]; then
@@ -150,7 +190,7 @@ fake_gh() {
                     case "$TEST_SCENARIO" in
                         normal_review|partial_timeline_error|zero_completed_at) review_after=1 ;;
                         ci_pending_then_success) review_after=3 ;;
-                        ci_success_request|no_checks) review_after=2 ;;
+                        ci_success_request|no_checks|empty_checks_valid) review_after=2 ;;
                         stale_failure|same_head_retry|superseded_rest|same_second_superseded|unrelated_trigger) review_after=2 ;;
                         in_flight_marker|in_flight_rest) review_after=3 ;;
                         timeline_refresh_error) review_after=4 ;;
@@ -163,7 +203,7 @@ fake_gh() {
                     ;;
                 repos/example/widgets/pulls/42/requested_reviewers)
                     case "$TEST_SCENARIO" in
-                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|release_dash|release_slash)
+                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|empty_checks_valid|release_dash|release_slash)
                             emit_json '{"users":[]}'
                             ;;
                         *)
@@ -302,7 +342,7 @@ run_case_raw() {
     mkdir -p "$state_dir"
     set +e
     CASE_OUTPUT=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO="$scenario" \
-        GH_PR_REQUEST_SCRIPT="$tmp_dir/bin/fake-request-copilot.sh" bash "$poller" 42 2 2>&1)
+        GH_PR_NOTIFY_TARGET= GH_PR_REQUEST_SCRIPT="$tmp_dir/bin/fake-request-copilot.sh" bash "$poller" 42 2 2>&1)
     CASE_RC=$?
     set -e
 }
@@ -343,6 +383,28 @@ output=$(run_case no_checks)
 assert_contains "$output" "preserving the poller's existing no-check eligibility" 'legacy no-check behavior'
 [ "$(wc -l < "$tmp_dir/no_checks/requests.log" 2>/dev/null || echo 0)" -eq 1 ] || fail 'legacy no-check behavior: expected exactly one Copilot request'
 printf '%s\n' 'ok - existing zero-check eligibility is preserved explicitly'
+assert_not_contains "$(cat "$tmp_dir/no_checks/calls.log")" '--json headRefOid,statusCheckRollup' 'array compatibility needs no confirmation'
+
+output=$(run_case empty_checks_valid)
+assert_contains "$output" "preserving the poller's existing no-check eligibility" 'confirmed empty checks'
+[ "$(wc -l < "$tmp_dir/empty_checks_valid/requests.log")" -eq 1 ] || fail 'confirmed empty checks: expected exactly one request'
+[ "$(rg -c -- '--json headRefOid,statusCheckRollup' "$tmp_dir/empty_checks_valid/calls.log")" -eq "$(cat "$tmp_dir/empty_checks_valid/checks")" ] || fail 'confirmed empty checks: expected one confirmation per empty checks query'
+printf '%s\n' 'ok - real gh empty stdout rc1 requires same-head empty rollup confirmation'
+
+for scenario in empty_checks_failed empty_checks_failed_json empty_checks_nonempty empty_checks_malformed empty_checks_wrong_head empty_checks_null empty_checks_missing empty_checks_multiple; do
+    run_case_raw "$scenario"
+    [ "$CASE_RC" -eq 4 ] || fail "$scenario: expected query error rc=4, got rc=$CASE_RC"
+    assert_contains "$CASE_OUTPUT" 'could not classify current-head CI checks' "$scenario"
+    [ ! -e "$tmp_dir/$scenario/requests.log" ] || fail "$scenario: Copilot request was attempted"
+    [ "$(rg -c -- '--json headRefOid,statusCheckRollup' "$tmp_dir/$scenario/calls.log")" -eq 1 ] || fail "$scenario: expected exactly one confirmation"
+    printf 'ok - %s rejects unconfirmed zero checks\n' "$scenario"
+done
+
+run_case_raw malformed_checks
+[ "$CASE_RC" -eq 4 ] || fail "malformed checks: expected rc=4, got rc=$CASE_RC"
+[ ! -e "$tmp_dir/malformed_checks/requests.log" ] || fail 'malformed checks: Copilot request was attempted'
+assert_not_contains "$(cat "$tmp_dir/malformed_checks/calls.log")" '--json headRefOid,statusCheckRollup' 'nonempty malformed checks must not trigger confirmation'
+printf '%s\n' 'ok - nonempty malformed checks fail without confirmation'
 
 output=$(run_case release_dash)
 assert_contains "$output" 'version-release PR detected' 'dash release detection'

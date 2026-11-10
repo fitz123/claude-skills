@@ -78,6 +78,21 @@ checks_status() {
     # current gh uses Go's zero time for some in-progress checks.
     local checks_json
     checks_json=$(gh pr checks "$pr" --json state,completedAt 2>/dev/null)
+    # gh can exit before JSON export when no checks exist. Confirm only that
+    # empty-output case with a successful, same-head structured snapshot.
+    if [ -z "$checks_json" ]; then
+        local confirmation_json
+        if confirmation_json=$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null) &&
+           jq -se --arg head "$head_sha" '
+               length == 1 and (.[0] | type == "object" and
+                   .headRefOid == $head and .statusCheckRollup == [])
+           ' >/dev/null 2>&1 <<< "$confirmation_json"; then
+            echo "none"
+        else
+            echo "query_error"
+        fi
+        return
+    fi
     if ! jq -e 'type == "array"' >/dev/null 2>&1 <<< "$checks_json"; then
         echo "query_error"
         return
