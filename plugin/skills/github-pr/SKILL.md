@@ -60,6 +60,11 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    review phase, `2` for failed CI, `3` for a head change, `4` for a query error,
    and `124` for timeout.
 
+   By default, zero checks remain pending until checks appear or polling times
+   out. Only for an established repository zero-CI policy, invoke with
+   `GH_PR_ALLOW_NO_CHECKS=1`; other values do not opt in. This permits the review
+   phase under that explicit policy, without claiming green CI or approval.
+
    Do **not** call `request-copilot-rereview.sh` while CI is pending. Direct use
    is only appropriate after independently proving current-head CI is green;
    the poller normally handles the request and its dedupe fallback.
@@ -110,7 +115,17 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   `ACTION_REQUIRED`, not `COMPLETED`. The poller combines structured `state`
   and `completedAt`, including Go's zero time, and requires every check to be
   `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks keep the poller's existing
-  eligible behavior and are reported explicitly rather than silently inferred.
+  eligibility only with `GH_PR_ALLOW_NO_CHECKS=1`, which the caller may set
+  after establishing the repository's zero-CI policy. Unset or any other value
+  treats both `[]` and confirmed empty output as pending: no review request,
+  with normal timeout if checks never appear. The policy is never guessed;
+  absence of checks is neither green CI nor review approval. When `gh pr checks`
+  emits empty stdout (including its no-checks exit code 1), the poller requires
+  a successful `gh pr view --json headRefOid,statusCheckRollup` returning one
+  object with the exact current head and an empty rollup. Other confirmation
+  results are query errors, even with the opt-in. The structured snapshot alone
+  cannot distinguish zero-CI policy from checks that have yet to register;
+  callers expecting CI must leave the opt-in unset.
 - **`gh pr checks --json status` doesn't work** — the field is `state`, not
   `status`. Same for the items inside the array.
 - **`(eval):1: == not found` errors** from background-launched polling loops
