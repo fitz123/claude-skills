@@ -103,7 +103,9 @@ def fake_gh():
             else:
                 print('[]')
         elif '/comments' in text:
-            print('[]')
+            print(json.dumps([{'body': '<!-- github-pr-rereview-head:' + 'a' * 40 + ' -->',
+                               'created_at': '2099-01-01T00:00:00Z'}])
+                  if os.environ['FAKE_MODE'] == 'recent' else '[]')
         else:
             raise RuntimeError(args)
     else:
