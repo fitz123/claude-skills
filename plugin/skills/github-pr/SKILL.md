@@ -53,8 +53,10 @@ GH_REPO=example/widgets bash "${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/pol
 
 Unset or empty `GH_REPO` keeps normal cwd-based selection. Invalid explicit
 formats and failed or empty repository resolution stop before any writes.
-A host-qualified selection sets `GH_HOST` within the helper and its children,
-overriding any conflicting `GH_HOST`, so API and PR calls use the same host.
+A host-qualified selection lowercases the hostname and removes a leading
+`www.` case-insensitively before setting `GH_HOST` within the helper and its
+children. This overrides any conflicting `GH_HOST`, so API and PR calls use
+the same host.
 Authentication for that host must already be configured in `gh`.
 
 ## The cycle (per round of fixes)
