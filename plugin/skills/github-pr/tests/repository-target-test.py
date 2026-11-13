@@ -54,7 +54,7 @@ def fake_gh():
             host, repo = scp.groups()
         elif repo.count('/') == 2:
             host, repo = repo.split('/', 1)
-        host = host.removeprefix('www.').lower()
+        host = host.lower().removeprefix('www.')
     with (state / 'calls.jsonl').open('a') as log:
         log.write(json.dumps(dict(kind=kind, args=args, target=f'{host}/{repo}', mutation=mutation)) + '\n')
     if kind == 'repo':
@@ -138,6 +138,7 @@ cases = [
 # Additional contexts are reported separately from the original 44-case A/B.
 regression_cases = [
     ('www-host', 'www.GitHub.COM/selected/widgets', 'cwd/project', False, ''),
+    ('uppercase-www-host', 'WWW.GitHub.COM/selected/widgets', 'cwd/project', False, ''),
     ('option-selector', '-bob/widgets', 'cwd/project', True, ''),
     ('ssh-selector', 'git@ghe.example:selected/widgets', 'cwd/project', True, ''),
 ]
@@ -163,7 +164,7 @@ for helper, script, mode in helpers:
         intended = explicit or cwd_repo
         if intended.count('/') == 2:
             intended_host, intended_repo = intended.split('/', 1)
-            intended = intended_host.removeprefix('www.').lower() + '/' + intended_repo
+            intended = intended_host.lower().removeprefix('www.') + '/' + intended_repo
         else:
             intended = (gh_host or 'github.com') + '/' + intended
         run = subprocess.run(['bash', str(scripts / script), '42', '2'], cwd=state,

@@ -69,7 +69,8 @@ if [ -n "${GH_REPO:-}" ]; then
     case "$GH_REPO" in
         */*/*)
             repo_host="${GH_REPO%%/*}"
-            export GH_HOST="$(printf '%s' "${repo_host#www.}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+            repo_host="$(printf '%s' "$repo_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+            export GH_HOST="${repo_host#www.}"
             ;;
     esac
 fi
