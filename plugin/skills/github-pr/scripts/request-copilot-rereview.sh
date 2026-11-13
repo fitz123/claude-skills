@@ -94,7 +94,7 @@ after=$(gh api "repos/$repo/issues/$pr/timeline" -H "Accept: application/vnd.git
     --jq '[.[] | select(.event == "review_requested" and .requested_reviewer.login == "Copilot")] | length' 2>/dev/null || echo 0)
 
 if [ "$after" -gt "$before" ]; then
-    echo "Copilot re-review requested on $repo PR #$pr (via REST; $before→$after review_requested events)"
+    echo "Copilot re-review requested on $repo PR #$pr (via REST; ${before}→${after} review_requested events)"
     exit 0
 fi
 
