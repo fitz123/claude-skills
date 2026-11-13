@@ -58,8 +58,22 @@ review_author="copilot-pull-request-reviewer"
 review_author_api="copilot-pull-request-reviewer[bot]"
 comment_author="copilot-swe-agent"
 
-repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-[ -z "$repo" ] && { echo "ERROR: couldn't determine repo (run inside a gh-tracked clone)"; exit 1; }
+# Keep repo view (which otherwise uses cwd) aligned with gh pr's selection.
+if [ -n "${GH_REPO:-}" ]; then
+    if ! [[ "$GH_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+(/[^/[:space:]]+)?$ ]]; then
+        echo "ERROR: GH_REPO must be OWNER/REPO or HOST/OWNER/REPO" >&2
+        exit 1
+    fi
+    # gh api uses GH_HOST, while gh pr also reads the host from GH_REPO.
+    case "$GH_REPO" in
+        */*/*) export GH_HOST="${GH_REPO%%/*}" ;;
+    esac
+fi
+repo=$(gh repo view ${GH_REPO:+"$GH_REPO"} --json nameWithOwner --jq .nameWithOwner) || {
+    echo "ERROR: couldn't resolve repository" >&2
+    exit 1
+}
+[ -n "$repo" ] || { echo "ERROR: couldn't determine repo" >&2; exit 1; }
 
 head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
 [ -z "$head_sha" ] && { echo "ERROR: couldn't determine PR head sha"; exit 1; }
