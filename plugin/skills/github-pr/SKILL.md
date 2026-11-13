@@ -42,6 +42,23 @@ Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
 This skill's poller emits a heartbeat line every cycle so liveness is visible.
 
+## Repository selection
+
+All three helpers accept `GH_REPO=OWNER/REPO` or `GH_REPO=HOST/OWNER/REPO`,
+including from another checkout or outside a checkout. For example:
+
+```bash
+GH_REPO=example/widgets bash "${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh" 42
+```
+
+Unset or empty `GH_REPO` keeps normal cwd-based selection. Invalid explicit
+formats and failed or empty repository resolution stop before any writes.
+A host-qualified selection lowercases the hostname and removes a leading
+`www.` case-insensitively before setting `GH_HOST` within the helper and its
+children. This overrides any conflicting `GH_HOST`, so API and PR calls use
+the same host.
+Authentication for that host must already be configured in `gh`.
+
 ## The cycle (per round of fixes)
 
 1. **Push fixes** addressing the prior Copilot review.

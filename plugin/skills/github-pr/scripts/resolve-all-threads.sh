@@ -9,7 +9,27 @@
 set -eu
 
 pr="${1:?usage: $0 <pr-number>}"
-repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+# Keep repo view (which otherwise uses cwd) aligned with gh pr's selection.
+if [ -n "${GH_REPO:-}" ]; then
+    if [[ "$GH_REPO" == -* ]] ||
+       ! [[ "$GH_REPO" =~ ^([^/@[:space:]]+/)?[^/@:[:space:]]+/[^/@:[:space:]]+$ ]]; then
+        echo "ERROR: GH_REPO must be OWNER/REPO or HOST/OWNER/REPO" >&2
+        exit 1
+    fi
+    # gh api uses GH_HOST, while gh pr also reads the host from GH_REPO.
+    case "$GH_REPO" in
+        */*/*)
+            repo_host="${GH_REPO%%/*}"
+            repo_host="$(printf '%s' "$repo_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+            export GH_HOST="${repo_host#www.}"
+            ;;
+    esac
+fi
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner -- ${GH_REPO:+"$GH_REPO"}) || {
+    echo "ERROR: couldn't resolve repository" >&2
+    exit 1
+}
+[ -n "$repo" ] || { echo "ERROR: couldn't determine repo" >&2; exit 1; }
 owner="${repo%/*}"; name="${repo#*/}"
 
 ids=$(gh api graphql -f query="{repository(owner:\"$owner\",name:\"$name\"){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved}}}}}" \
