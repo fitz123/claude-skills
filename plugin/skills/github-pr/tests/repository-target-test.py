@@ -25,7 +25,12 @@ def fake_gh():
     kind = args[0]
     if kind == 'repo':
         # Real gh repo view ignores GH_REPO unless supplied positionally.
-        repo = args[2] if len(args) > 2 and not args[2].startswith('-') else cwd_repo
+        if '--' in args:
+            positional = args[args.index('--') + 1:]
+            repo = positional[0] if positional else cwd_repo
+        else:
+            # -bob/widgets is parsed as -b with an attached branch value.
+            repo = args[2] if len(args) > 2 and not args[2].startswith('-') else cwd_repo
     elif kind == 'pr':
         repo = explicit or cwd_repo
         mutation = args[1] == 'comment'
@@ -41,8 +46,15 @@ def fake_gh():
         else:
             # Thread IDs belong to the repository selected by the prior query.
             repo = (state / 'thread-repo').read_text()
-    if repo.count('/') == 2:
-        host, repo = repo.split('/', 1)
+    if kind in ('repo', 'pr'):
+        # ghrepo accepts SCP syntax and normalizes repo/pr hosts; gh api uses
+        # raw GH_HOST. Keep those behaviors distinct to expose mixed targets.
+        scp = re.fullmatch(r'git@([^:]+):(.+/.+)', repo)
+        if scp:
+            host, repo = scp.groups()
+        elif repo.count('/') == 2:
+            host, repo = repo.split('/', 1)
+        host = host.removeprefix('www.').lower()
     with (state / 'calls.jsonl').open('a') as log:
         log.write(json.dumps(dict(kind=kind, args=args, target=f'{host}/{repo}', mutation=mutation)) + '\n')
     if kind == 'repo':
@@ -123,13 +135,20 @@ cases = [
     ('host-explicit', 'git.example/selected/widgets', 'cwd/project', False, ''),
     ('host-conflict', 'git.example/selected/widgets', 'cwd/project', False, 'other.example'),
 ]
+# Additional contexts are reported separately from the original 44-case A/B.
+regression_cases = [
+    ('www-host', 'www.GitHub.COM/selected/widgets', 'cwd/project', False, ''),
+    ('option-selector', '-bob/widgets', 'cwd/project', True, ''),
+    ('ssh-selector', 'git@ghe.example:selected/widgets', 'cwd/project', True, ''),
+]
 helpers = [('poll', 'poll-pr-review.sh', 'fallback'),
            ('request-rest', 'request-copilot-rereview.sh', 'rest'),
            ('request-fallback', 'request-copilot-rereview.sh', 'fallback'),
            ('resolve', 'resolve-all-threads.sh', 'fallback')]
 failed = wrong_total = wrong_writes_total = 0
+groups = {'ORIGINAL': [0, 0, 0, 0], 'REGRESSIONS': [0, 0, 0, 0]}
 for helper, script, mode in helpers:
-    for label, explicit, cwd_repo, invalid, gh_host in cases:
+    for label, explicit, cwd_repo, invalid, gh_host in cases + regression_cases:
         state = results / f'{helper}-{label}'
         state.mkdir()
         env = dict(os.environ)
@@ -142,7 +161,10 @@ for helper, script, mode in helpers:
         if gh_host:
             env['GH_HOST'] = gh_host
         intended = explicit or cwd_repo
-        if intended.count('/') != 2:
+        if intended.count('/') == 2:
+            intended_host, intended_repo = intended.split('/', 1)
+            intended = intended_host.removeprefix('www.').lower() + '/' + intended_repo
+        else:
             intended = (gh_host or 'github.com') + '/' + intended
         run = subprocess.run(['bash', str(scripts / script), '42', '2'], cwd=state,
                              env=env, capture_output=True, text=True, errors='backslashreplace', timeout=10)
@@ -157,9 +179,16 @@ for helper, script, mode in helpers:
         if mode == 'fallback' and helper != 'resolve':
             exercised = exercised and any(c['kind'] == 'pr' for c in writes)
         ok = not wrong and (run.returncode != 0 and not writes if invalid else run.returncode == 0 and exercised)
+        group = groups['ORIGINAL' if label in {c[0] for c in cases} else 'REGRESSIONS']
+        group[0] += 1
+        group[1] += not ok
+        group[2] += len(wrong)
+        group[3] += len(wrong_writes)
         failed += not ok
         wrong_total += len(wrong)
         wrong_writes_total += len(wrong_writes)
         print(f'{"PASS" if ok else "FAIL"} {helper}/{label}: exit={run.returncode} wrong_calls={len(wrong)} wrong_mutations={len(wrong_writes)} mutations={len(writes)}', flush=True)
-print(f'TOTAL cases={len(cases) * len(helpers)} failed={failed} wrong_calls={wrong_total} wrong_mutations={wrong_writes_total}')
+for name, (count, failures, wrong, mutations) in groups.items():
+    print(f'{name} cases={count} failed={failures} wrong_calls={wrong} wrong_mutations={mutations}')
+print(f'TOTAL cases={sum(g[0] for g in groups.values())} failed={failed} wrong_calls={wrong_total} wrong_mutations={wrong_writes_total}')
 sys.exit(bool(failed))

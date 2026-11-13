@@ -60,16 +60,20 @@ comment_author="copilot-swe-agent"
 
 # Keep repo view (which otherwise uses cwd) aligned with gh pr's selection.
 if [ -n "${GH_REPO:-}" ]; then
-    if ! [[ "$GH_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+(/[^/[:space:]]+)?$ ]]; then
+    if [[ "$GH_REPO" == -* ]] ||
+       ! [[ "$GH_REPO" =~ ^([^/@[:space:]]+/)?[^/@:[:space:]]+/[^/@:[:space:]]+$ ]]; then
         echo "ERROR: GH_REPO must be OWNER/REPO or HOST/OWNER/REPO" >&2
         exit 1
     fi
     # gh api uses GH_HOST, while gh pr also reads the host from GH_REPO.
     case "$GH_REPO" in
-        */*/*) export GH_HOST="${GH_REPO%%/*}" ;;
+        */*/*)
+            repo_host="${GH_REPO%%/*}"
+            export GH_HOST="$(printf '%s' "${repo_host#www.}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+            ;;
     esac
 fi
-repo=$(gh repo view ${GH_REPO:+"$GH_REPO"} --json nameWithOwner --jq .nameWithOwner) || {
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner -- ${GH_REPO:+"$GH_REPO"}) || {
     echo "ERROR: couldn't resolve repository" >&2
     exit 1
 }
