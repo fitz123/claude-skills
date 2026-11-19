@@ -42,6 +42,23 @@ Plus: background polling loops that only emit output at the end are
 indistinguishable from hung processes when an upstream agent is watching.
 This skill's poller emits a heartbeat line every cycle so liveness is visible.
 
+## Repository selection
+
+All three helpers accept `GH_REPO=OWNER/REPO` or `GH_REPO=HOST/OWNER/REPO`,
+including from another checkout or outside a checkout. For example:
+
+```bash
+GH_REPO=example/widgets bash "${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh" 42
+```
+
+Unset or empty `GH_REPO` keeps normal cwd-based selection. Invalid explicit
+formats and failed or empty repository resolution stop before any writes.
+A host-qualified selection lowercases the hostname and removes a leading
+`www.` case-insensitively before setting `GH_HOST` within the helper and its
+children. This overrides any conflicting `GH_HOST`, so API and PR calls use
+the same host.
+Authentication for that host must already be configured in `gh`.
+
 ## The cycle (per round of fixes)
 
 1. **Push fixes** addressing the prior Copilot review.
@@ -59,6 +76,11 @@ This skill's poller emits a heartbeat line every cycle so liveness is visible.
    The timeout covers the poll cycle. Exit codes are `0` for a completed green-CI
    review phase, `2` for failed CI, `3` for a head change, `4` for a query error,
    and `124` for timeout.
+
+   By default, zero checks remain pending until checks appear or polling times
+   out. Only for an established repository zero-CI policy, invoke with
+   `GH_PR_ALLOW_NO_CHECKS=1`; other values do not opt in. This permits the review
+   phase under that explicit policy, without claiming green CI or approval.
 
    Do **not** call `request-copilot-rereview.sh` while CI is pending. Direct use
    is only appropriate after independently proving current-head CI is green;
@@ -110,7 +132,17 @@ gh pr view NN --json reviewDecision,reviews,statusCheckRollup
   `ACTION_REQUIRED`, not `COMPLETED`. The poller combines structured `state`
   and `completedAt`, including Go's zero time, and requires every check to be
   `SUCCESS`, `SKIPPED`, or `NEUTRAL`. Zero checks keep the poller's existing
-  eligible behavior and are reported explicitly rather than silently inferred.
+  eligibility only with `GH_PR_ALLOW_NO_CHECKS=1`, which the caller may set
+  after establishing the repository's zero-CI policy. Unset or any other value
+  treats both `[]` and confirmed empty output as pending: no review request,
+  with normal timeout if checks never appear. The policy is never guessed;
+  absence of checks is neither green CI nor review approval. When `gh pr checks`
+  emits empty stdout (including its no-checks exit code 1), the poller requires
+  a successful `gh pr view --json headRefOid,statusCheckRollup` returning one
+  object with the exact current head and an empty rollup. Other confirmation
+  results are query errors, even with the opt-in. The structured snapshot alone
+  cannot distinguish zero-CI policy from checks that have yet to register;
+  callers expecting CI must leave the opt-in unset.
 - **`gh pr checks --json status` doesn't work** — the field is `state`, not
   `status`. Same for the items inside the array.
 - **`(eval):1: == not found` errors** from background-launched polling loops
