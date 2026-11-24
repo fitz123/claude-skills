@@ -23,6 +23,32 @@
 set -eu
 
 pr="${1:?usage: $0 <pr-number>}"
+expected_head="${GH_PR_EXPECTED_HEAD:-}"
+if [ "${GH_PR_EXPECTED_HEAD+x}" = "x" ] &&
+   { [ -z "${GH_REPO:-}" ] || ! [[ "$expected_head" =~ ^[0-9a-f]{40}$ && "$pr" =~ ^[1-9][0-9]*$ ]]; }; then
+    echo "ERROR: expected a PR number, explicit GH_REPO and a full lowercase SHA in GH_PR_EXPECTED_HEAD" >&2
+    exit 1
+fi
+
+ensure_expected_pr() {
+    [ -n "$expected_head" ] || return 0
+    local current_head state snapshot
+    if ! snapshot=$(gh pr view "$pr" --json headRefOid,state --jq '[.headRefOid, .state] | @tsv' 2>/dev/null) ||
+       ! [[ "$snapshot" =~ ^[0-9a-f]{40}$'\t'(OPEN|CLOSED|MERGED)$ ]]; then
+        echo "ERROR: could not verify the PR head and state before requesting Copilot" >&2
+        exit 4
+    fi
+    IFS=$'\t' read -r current_head state <<< "$snapshot"
+    if [ "$current_head" != "$expected_head" ]; then
+        echo "ERROR: PR head changed before requesting Copilot" >&2
+        exit 3
+    fi
+    if [ "$state" != "OPEN" ]; then
+        echo "ERROR: PR state is $state" >&2
+        exit 5
+    fi
+}
+
 # Keep repo view (which otherwise uses cwd) aligned with gh pr's selection.
 if [ -n "${GH_REPO:-}" ]; then
     if [[ "$GH_REPO" == -* ]] ||
@@ -49,8 +75,14 @@ cooldown_seconds="${COPILOT_REREVIEW_COOLDOWN_SECONDS:-1800}"
 case "$cooldown_seconds" in
     ''|*[!0-9]*) cooldown_seconds=1800 ;;
 esac
-head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
-head_commit_at=$(gh pr view "$pr" --json commits --jq '.commits[-1].committedDate // ""' 2>/dev/null || echo "")
+if [ -n "$expected_head" ]; then
+    ensure_expected_pr
+    head_sha="$expected_head"
+    head_commit_at=""
+else
+    head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+    head_commit_at=$(gh pr view "$pr" --json commits --jq '.commits[-1].committedDate // ""' 2>/dev/null || echo "")
+fi
 request_marker="<!-- github-pr-rereview-head:$head_sha -->"
 request_body="@copilot please re-review — fixes pushed since the last review
 
@@ -86,6 +118,7 @@ skip_if_recent_fallback_exists
 before=$(gh api "repos/$repo/issues/$pr/timeline" -H "Accept: application/vnd.github+json" --paginate \
     --jq '[.[] | select(.event == "review_requested" and .requested_reviewer.login == "Copilot")] | length' 2>/dev/null || echo 0)
 
+ensure_expected_pr
 gh api -X POST "/repos/$repo/pulls/$pr/requested_reviewers" -f 'reviewers[]=Copilot' > /dev/null 2>&1 || true
 
 # Sleep briefly for the timeline event to materialize, then re-check.
@@ -103,6 +136,7 @@ fi
 # should watch for both. Re-check before commenting to avoid races with another
 # poller or an explicit request that posted while REST was sleeping.
 skip_if_recent_fallback_exists
+ensure_expected_pr
 echo "REST endpoint silently no-op'd (rate-limit/dedup). Falling back to @copilot comment."
 gh pr comment "$pr" --body "$request_body" > /dev/null
 echo "@copilot comment posted on $repo PR #$pr for head ${head_sha:0:7}"

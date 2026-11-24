@@ -59,6 +59,43 @@ children. This overrides any conflicting `GH_HOST`, so API and PR calls use
 the same host.
 Authentication for that host must already be configured in `gh`.
 
+## Merge readiness for an exact head
+
+Set `GH_PR_EXPECTED_HEAD` to the full 40-character lowercase SHA you intend to
+merge. This mode requires an explicit `GH_REPO` and a numeric PR number. It
+checks the head and open state before any Copilot request or fallback comment,
+rechecks both during polling and at completion, and keeps progress on stderr.
+
+```bash
+repo=example/widgets
+pr=42
+head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  # Use the SHA you intend to merge.
+GH_REPO="$repo" GH_PR_EXPECTED_HEAD="$head" \
+  bash "${CLAUDE_PLUGIN_ROOT}/skills/github-pr/scripts/poll-pr-review.sh" "$pr" 600
+```
+
+Stdout contains one compact JSON object with `ready`, `reason`, `repo`, `pr`,
+`expected_head`, `checks`, and `copilot`. Exit `0` means the expected head has
+settled checks, the usual Copilot outcome (activity, `terminal_no_review`, or
+`release_skip`), and an open, non-draft, `CLEAN` and `MERGEABLE` PR with no
+blocking review decision or unresolved threads across all pages. `checks: "none"`
+is eligible only with `GH_PR_ALLOW_NO_CHECKS=1` under an established no-CI policy.
+Copilot reviews match the SHA by commit ID. A comment can qualify after a
+request marked for that SHA or a GitHub-observed head force-push to that SHA.
+The final branch and title determine whether the release skip applies. If it
+no longer applies and Copilot evidence is still due, the result is `copilot_pending`.
+
+Other exits are `1` for invalid input, `2` for failed checks, `3` for a head
+mismatch, `4` for a query error or incomplete readiness data, `5` for a readiness
+blocker, and `124` for a poll timeout. The final gate reports blockers immediately.
+
+When authorized to merge after exit `0`, use the same repository, PR, and SHA
+so GitHub checks the head at merge time. Choose the repository’s merge strategy.
+
+```bash
+gh pr merge "$pr" --repo "$repo" --match-head-commit "$head" --squash
+```
+
 ## The cycle (per round of fixes)
 
 1. **Push fixes** addressing the prior Copilot review.

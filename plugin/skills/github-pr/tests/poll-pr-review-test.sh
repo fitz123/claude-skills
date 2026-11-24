@@ -79,6 +79,14 @@ fake_gh() {
                                 emit_json '[{"state":"FAILURE","completedAt":"2026-07-14T10:10:00Z"}]'
                                 return 1
                                 ;;
+                            ready_replaced_at_start|ready_replaced_in_wait)
+                                if [ "$TEST_SCENARIO" = ready_replaced_at_start ] || [ "$check_call" -gt 1 ]; then
+                                    touch "$FAKE_GH_STATE_DIR/replacement"
+                                    emit_json '[{"state":"FAILURE","completedAt":"2026-07-14T10:10:00Z"}]'
+                                    return 1
+                                fi
+                                emit_json '[{"state":"IN_PROGRESS","completedAt":null}]'
+                                ;;
                             empty_checks_register)
                                 if [ "$check_call" -eq 1 ]; then
                                     return 1
@@ -88,13 +96,32 @@ fake_gh() {
                                     emit_json '[{"state":"SUCCESS","completedAt":"2026-07-14T10:10:00Z"}]'
                                 fi
                                 ;;
-                            empty_checks_*)
+                            empty_checks_*|ready_empty_checks)
                                 printf '%s\n' 'no checks reported on the branch' >&2
                                 return 1
                                 ;;
                             malformed_checks)
                                 printf '%s\n' 'not JSON'
                                 return 1
+                                ;;
+                            ready_checks_partial)
+                                emit_json '[{"state":"SUCCESS","completedAt":"2026-07-14T10:10:00Z"}]'
+                                return 1
+                                ;;
+                            ready_checks_incomplete)
+                                emit_json '[{"state":"SUCCESS","completedAt":"invalid"}]'
+                                ;;
+                            ready_checks_regressed|ready_checks_failed_at_end)
+                                if [ "$check_call" -gt 2 ]; then
+                                    if [ "$TEST_SCENARIO" = ready_checks_regressed ]; then
+                                        emit_json '[{"state":"IN_PROGRESS","completedAt":null}]'
+                                    else
+                                        emit_json '[{"state":"FAILURE","completedAt":"2026-07-14T10:10:00Z"}]'
+                                        return 1
+                                    fi
+                                else
+                                    emit_json '[{"state":"SUCCESS","completedAt":"2026-07-14T10:10:00Z"}]'
+                                fi
                                 ;;
                             no_checks|no_checks_default)
                                 emit_json '[]'
@@ -140,14 +167,23 @@ fake_gh() {
                                 emit_json "{\"headRefOid\":\"$head_sha\",\"statusCheckRollup\":[]}"
                                 ;;
                         esac
-                    elif [[ " $* " == *" --json headRefOid "* ]]; then
-                        local head_call
+                    elif [[ " $* " == *" --json headRefOid "* || " $* " == *" --json headRefOid,state "* ]]; then
+                        local head_call state=OPEN
                         head_call=$(next_call head)
-                        if [ "$TEST_SCENARIO" = "head_changed" ] && [ "$head_call" -gt 1 ]; then
-                            emit_json '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
-                        else
-                            emit_json "{\"headRefOid\":\"$head_sha\"}"
-                        fi
+                        case "$TEST_SCENARIO" in
+                            head_changed) [ "$head_call" -eq 1 ] || head_sha="${head_sha//a/b}" ;;
+                            ready_replaced_*) [ ! -e "$FAKE_GH_STATE_DIR/replacement" ] || head_sha="${head_sha//a/b}" ;;
+                            ready_closed) state=CLOSED ;;
+                            ready_merged) state=MERGED ;;
+                            ready_closed_in_wait) [ "$head_call" -le 3 ] || state=CLOSED ;;
+                            ready_head_at_end) [ ! -e "$FAKE_GH_STATE_DIR/readiness" ] || head_sha="${head_sha//a/b}" ;;
+                            ready_head_at_request) [ ! -e "$FAKE_GH_STATE_DIR/requested-reviewers" ] || head_sha="${head_sha//a/b}" ;;
+                            ready_closed_at_request) [ ! -e "$FAKE_GH_STATE_DIR/requested-reviewers" ] || state=CLOSED ;;
+                            ready_head_at_rest) [ ! -e "$FAKE_GH_STATE_DIR/request-timeline" ] || head_sha="${head_sha//a/b}" ;;
+                            ready_head_at_fallback) [ ! -e "$FAKE_GH_STATE_DIR/rest-post" ] || head_sha="${head_sha//a/b}" ;;
+                            ready_closed_at_fallback) [ ! -e "$FAKE_GH_STATE_DIR/rest-post" ] || state=CLOSED ;;
+                        esac
+                        emit_json "{\"headRefOid\":\"$head_sha\",\"state\":\"$state\"}"
                     elif [[ " $* " == *" --json commits "* ]]; then
                         emit_json '{"commits":[{"committedDate":"2026-07-14T09:00:00Z"}]}'
                     elif [[ " $* " == *" --json headRefName,title "* ]]; then
@@ -155,7 +191,7 @@ fake_gh() {
                             release_dash)
                                 emit_json '{"headRefName":"release-2026.8.0","title":"chore: release 2026.8.0"}'
                                 ;;
-                            release_slash)
+                            release_slash|ready_release_reclassified*)
                                 emit_json '{"headRefName":"release/v2026.7.43","title":"Release v2026.7.43"}'
                                 ;;
                             *)
@@ -166,7 +202,9 @@ fake_gh() {
                         emit_json '{"reviews":[]}'
                     elif [[ " $* " == *" --json comments "* ]]; then
                         local comments='[]'
-                        if [ "$TEST_SCENARIO" = "normal_comment" ]; then
+                        if [ "$TEST_SCENARIO" = "ready_previous_comment" ]; then
+                            comments='[{"author":{"login":"copilot-swe-agent"},"createdAt":"2026-07-14T10:02:00Z","body":"Review complete"}]'
+                        elif [ "$TEST_SCENARIO" = "normal_comment" ]; then
                             if [[ "$jq_filter" == *"| length"* ]]; then
                                 local comment_call
                                 comment_call=$(next_call comments)
@@ -183,6 +221,9 @@ fake_gh() {
                         return 1
                     fi
                     ;;
+                comment)
+                    touch "$FAKE_GH_STATE_DIR/comment-post"
+                    ;;
                 *)
                     printf '%s\n' "unexpected fake gh pr call: $subcommand $*" >&2
                     return 1
@@ -197,6 +238,9 @@ fake_gh() {
                     review_call=$(next_call reviews)
                     local review_after=0
                     case "$TEST_SCENARIO" in
+                        ready_head_at_request|ready_head_at_rest|ready_head_at_fallback|ready_timeline_error|ready_closed|ready_closed_at_*|ready_closed_in_wait|ready_release_reclassified|ready_*comment*) ;;
+                        ready_requested) [ ! -e "$FAKE_GH_STATE_DIR/comment-post" ] || review_after=-1 ;;
+                        ready_*) review_after=-1 ;;
                         normal_review|partial_timeline_error|zero_completed_at) review_after=1 ;;
                         ci_pending_then_success|empty_checks_register) review_after=3 ;;
                         ci_success_request|no_checks|empty_checks_*) review_after=2 ;;
@@ -204,7 +248,7 @@ fake_gh() {
                         in_flight_marker|in_flight_rest) review_after=3 ;;
                         timeline_refresh_error) review_after=4 ;;
                     esac
-                    if [ "$review_after" -gt 0 ] && [ "$review_call" -gt "$review_after" ]; then
+                    if [ "$review_after" -ne 0 ] && [ "$review_call" -gt "$review_after" ]; then
                         emit_json "[{\"user\":{\"login\":\"copilot-pull-request-reviewer[bot]\"},\"commit_id\":\"$head_sha\"}]"
                     else
                         emit_json '[]'
@@ -212,7 +256,8 @@ fake_gh() {
                     ;;
                 repos/example/widgets/pulls/42/requested_reviewers)
                     case "$TEST_SCENARIO" in
-                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|empty_checks_*|release_dash|release_slash)
+                        ci_pending_then_success|ci_failure|ci_success_request|head_changed|no_checks|empty_checks_*|release_dash|release_slash|correlated_failure|ready_head_at_request|ready_head_at_rest|ready_head_at_fallback|ready_requested|ready_timeline_error|ready_closed_at_request|ready_closed_at_fallback)
+                            touch "$FAKE_GH_STATE_DIR/requested-reviewers"
                             emit_json '{"users":[]}'
                             ;;
                         *)
@@ -224,10 +269,30 @@ fake_gh() {
                     local timeline_call
                     timeline_call=$(next_call timeline)
                     case "$TEST_SCENARIO" in
+                        ready_previous_comment|ready_marker_comment|ready_copilot_bot_comment|ready_copilot_user_comment|ready_copilot_old_comment|ready_push_comment|ready_comment_before_push|ready_comment_wrong_push|ready_comment_old_trigger)
+                            local reply='{"event":"commented","id":101,"created_at":"2026-07-14T10:02:00Z","user":{"login":"copilot-swe-agent"}}'
+                            local marker="$current_marker"
+                            case "$TEST_SCENARIO" in
+                                ready_previous_comment) marker="<!-- github-pr-rereview-head:${head_sha//a/b} -->" ;;
+                                ready_marker_comment) ;;
+                                ready_copilot_*_comment)
+                                    local reply_type=Bot
+                                    [ "$TEST_SCENARIO" != ready_copilot_user_comment ] || reply_type=User
+                                    [ "$TEST_SCENARIO" != ready_copilot_old_comment ] || marker="<!-- github-pr-rereview-head:${head_sha//a/b} -->"
+                                    reply="{\"event\":\"commented\",\"id\":101,\"created_at\":\"2026-07-14T10:02:00Z\",\"user\":{\"login\":\"Copilot\",\"type\":\"$reply_type\"},\"body\":\"> @copilot please re-review\\n> $marker\\n\\nReview complete.\"}"
+                                    ;;
+                                ready_comment_old_trigger)
+                                    emit_json "[{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:00:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}},$reply]"
+                                    return
+                                    ;;
+                                *) emit_json "[$reply]"; return ;;
+                            esac
+                            emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:01:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$marker\"},$reply]"
+                            ;;
                         correlated_failure)
                             emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
                             ;;
-                        partial_timeline_error)
+                        partial_timeline_error|ready_timeline_error)
                             emit_json "[{\"event\":\"commented\",\"id\":100,\"created_at\":\"2026-07-14T10:00:00Z\",\"user\":{\"login\":\"reviewer\"},\"body\":\"@copilot please re-review\\n\\n$current_marker\"},{\"event\":\"copilot_work_finished_failure\",\"created_at\":\"2026-07-14T10:00:05Z\"}]"
                             return 1
                             ;;
@@ -286,7 +351,71 @@ fake_gh() {
                     esac
                     ;;
                 graphql)
-                    emit_json '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+                    if [[ "$*" == *HEAD_REF_FORCE_PUSHED_EVENT* ]]; then
+                        local push_head="$head_sha" pushed_at='2026-07-14T10:01:00Z'
+                        case "$TEST_SCENARIO" in
+                            ready_comment_before_push) pushed_at='2026-07-14T10:03:00Z' ;;
+                            ready_comment_wrong_push) push_head="${head_sha//a/b}" ;;
+                            ready_push_comment|ready_comment_old_trigger) ;;
+                            *) emit_json "{\"data\":{\"repository\":{\"pullRequest\":{\"headRefOid\":\"$head_sha\",\"timelineItems\":{\"nodes\":[]}}}}}"; return ;;
+                        esac
+                        emit_json "{\"data\":{\"repository\":{\"pullRequest\":{\"headRefOid\":\"$head_sha\",\"timelineItems\":{\"nodes\":[{\"afterCommit\":{\"oid\":\"$push_head\"},\"createdAt\":\"$pushed_at\"}]}}}}}"
+                        return
+                    fi
+                    if [[ " $* " != *" --paginate "* ]]; then
+                        emit_json '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+                        return
+                    fi
+                    [[ "$*" == *"after: \$endCursor"* && "$*" == *'hasNextPage endCursor'* ]] || return 1
+                    touch "$FAKE_GH_STATE_DIR/readiness"
+                    local state='"OPEN"' draft=false merge_state=CLEAN mergeable=MERGEABLE decision=null
+                    local branch='fix/example' title='Fix example'
+                    local next=false cursor=null total=0 nodes='[]' errors='[]' readiness_rc=0
+                    case "$TEST_SCENARIO" in
+                        ready_closed_final) state='"CLOSED"' ;;
+                        ready_draft) draft=true ;;
+                        ready_unclean) merge_state=BLOCKED ;;
+                        ready_conflicting) mergeable=CONFLICTING ;;
+                        ready_review_blocked) decision='"CHANGES_REQUESTED"'; merge_state=BLOCKED ;;
+                        ready_review_required) decision='"REVIEW_REQUIRED"'; mergeable=UNKNOWN ;;
+                        ready_unknown) mergeable=UNKNOWN ;;
+                        ready_unknown_state) merge_state=UNKNOWN ;;
+                        ready_unknown_with_blocker) mergeable=UNKNOWN; merge_state=BLOCKED ;;
+                        ready_review_approved) decision='"APPROVED"' ;;
+                        ready_threads) merge_state=BLOCKED; next=true; cursor='"cursor-1"'; total=2; nodes='[{"id":"thread-1","isResolved":true}]' ;;
+                        ready_second_page|ready_missing_page|ready_head_on_second_page) next=true; cursor='"cursor-1"'; total=2; nodes='[{"id":"thread-1","isResolved":true}]' ;;
+                        ready_threads_incomplete) total=1; nodes='[{"id":"thread-1"}]' ;;
+                        ready_missing_state) state=null ;;
+                        ready_graphql_errors) errors='[{"message":"fixture error"}]' ;;
+                        ready_graphql_failed) readiness_rc=1 ;;
+                        release_slash|ready_now_release) branch='release/v2026.7.43'; title='Release v2026.7.43' ;;
+                        ready_release_reclassified*) branch='release/v2026.7.43'; title='Needs review' ;;
+                    esac
+                    emit_readiness_page() {
+                        emit_json "{\"errors\":$errors,\"data\":{\"repository\":{\"pullRequest\":{\"headRefOid\":\"$head_sha\",\"state\":$state,\"headRefName\":\"$branch\",\"title\":\"$title\",\"isDraft\":$draft,\"mergeStateStatus\":\"$merge_state\",\"mergeable\":\"$mergeable\",\"reviewDecision\":$decision,\"reviewThreads\":{\"totalCount\":$total,\"nodes\":$nodes,\"pageInfo\":{\"hasNextPage\":$next,\"endCursor\":$cursor}}}}}}"
+                    }
+                    emit_readiness_page
+                    case "$TEST_SCENARIO" in
+                        ready_threads|ready_second_page|ready_head_on_second_page)
+                            next=false; cursor='"cursor-2"'
+                            nodes='[{"id":"thread-2","isResolved":true}]'
+                            [ "$TEST_SCENARIO" != ready_threads ] || nodes='[{"id":"thread-2","isResolved":false}]'
+                            [ "$TEST_SCENARIO" != ready_head_on_second_page ] || head_sha="${head_sha//a/b}"
+                            emit_readiness_page
+                            ;;
+                    esac
+                    return "$readiness_rc"
+                    ;;
+                'repos/example/widgets/issues/42/comments?per_page=100')
+                    emit_json '[]'
+                    ;;
+                repos/example/widgets/issues/42/timeline)
+                    touch "$FAKE_GH_STATE_DIR/request-timeline"
+                    printf '0\n'
+                    ;;
+                -X)
+                    [[ "$*" == *'POST /repos/example/widgets/pulls/42/requested_reviewers'* ]] || return 1
+                    touch "$FAKE_GH_STATE_DIR/rest-post"
                     ;;
                 *)
                     printf '%s\n' "unexpected fake gh api call: $*" >&2
@@ -332,6 +461,7 @@ assert_not_contains() {
 
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 poller="$test_dir/../scripts/poll-pr-review.sh"
+unset GH_PR_EXPECTED_HEAD
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$tmp_dir/bin"
@@ -589,5 +719,100 @@ output=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO=
     bash "$poller" 42 2 2>&1) || fail 'notify_absent: poller exited non-zero'
 [ ! -f "$notify_log" ] || fail 'notify_absent: delivery attempted without a target'
 printf '%s\n' 'ok - no notification without GH_PR_NOTIFY_TARGET'
+
+expected_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+run_readiness() {
+    local scenario="$1" rc="$2" reason="$3" checks="$4" copilot="$5"
+    local head="${6-$expected_head}" repo="${7-example/widgets}" policy="${8-}" budget="${9-2}"
+    local state_dir="$tmp_dir/expected-$scenario-$reason-$policy"
+    local request="$tmp_dir/bin/fake-request-copilot.sh"
+    case "$scenario" in
+        ready_head_at_rest|ready_head_at_fallback|ready_closed_at_fallback|ready_requested) request="$test_dir/../scripts/request-copilot-rereview.sh" ;;
+    esac
+    mkdir -p "$state_dir"
+    CASE_RC=0
+    CASE_OUTPUT=$(PATH="$tmp_dir/bin:$PATH" FAKE_GH_STATE_DIR="$state_dir" TEST_SCENARIO="$scenario" \
+        GH_REPO="$repo" GH_PR_EXPECTED_HEAD="$head" GH_PR_ALLOW_NO_CHECKS="$policy" GH_PR_NOTIFY_TARGET='' \
+        GH_PR_REQUEST_SCRIPT="$request" bash "$poller" 42 "$budget" 2>"$state_dir/stderr.log") || CASE_RC=$?
+    [ "$CASE_RC" -eq "$rc" ] || fail "$scenario: expected readiness exit $rc, got $CASE_RC ($CASE_OUTPUT)"
+    jq -se --arg reason "$reason" --arg checks "$checks" --arg copilot "$copilot" --arg head "$head" --arg repo "$repo" '
+        length == 1 and (.[0] | .ready == ($reason == "ready") and .reason == $reason and
+            .checks == $checks and .copilot == $copilot and .expected_head == $head and
+            .pr == 42 and .repo == $repo)
+    ' <<< "$CASE_OUTPUT" >/dev/null || fail "$scenario: unexpected readiness result $CASE_OUTPUT"
+    if [ "$reason" = invalid_input ]; then
+        [ ! -e "$state_dir/calls.log" ] || fail "$scenario: invalid input reached gh"
+    fi
+    [ ! -e "$state_dir/requests.log" ] || fail "$scenario: unexpected Copilot request"
+    case "$scenario" in
+        ready_requested)
+            [ -e "$state_dir/rest-post" ] && [ -e "$state_dir/comment-post" ] || fail "$scenario: expected a REST request and fallback comment"
+            assert_contains "$(cat "$state_dir/calls.log")" "github-pr-rereview-head:$head" "$scenario: fallback head marker"
+            ;;
+        ready_head_at_fallback|ready_closed_at_fallback)
+            [ -e "$state_dir/rest-post" ] && [ ! -e "$state_dir/comment-post" ] || fail "$scenario: expected only the REST request"
+            ;;
+        *)
+            [ ! -e "$state_dir/rest-post" ] && [ ! -e "$state_dir/comment-post" ] || fail "$scenario: unexpected REST request or fallback comment"
+            ;;
+    esac
+    printf 'ok - expected-head %s -> %s\n' "$scenario" "$reason"
+}
+
+run_readiness ready_previous_comment 124 timeout success pending
+run_readiness ready_marker_comment 0 ready success activity
+run_readiness ready_copilot_bot_comment 0 ready success activity
+run_readiness ready_copilot_user_comment 124 timeout success pending
+run_readiness ready_copilot_old_comment 124 timeout success pending
+run_readiness ready_push_comment 0 ready success activity
+run_readiness ready_comment_before_push 124 timeout success pending
+run_readiness ready_comment_wrong_push 124 timeout success pending
+run_readiness ready_comment_old_trigger 124 timeout success pending
+run_readiness ready_second_page 0 ready success activity
+run_readiness ready_review_approved 0 ready success activity
+run_readiness ready_requested 0 ready success activity
+run_readiness correlated_failure 0 ready success terminal_no_review
+run_readiness release_slash 0 ready success release_skip
+run_readiness ready_release_reclassified 5 copilot_pending success pending
+run_readiness ready_release_reclassified_reviewed 0 ready success activity
+run_readiness ready_now_release 0 ready success release_skip
+run_readiness ready_empty_checks 0 ready none activity "$expected_head" example/widgets 1
+run_readiness ready_empty_checks 124 timeout pending activity
+run_readiness ready_empty_checks 124 timeout pending activity "$expected_head" example/widgets true
+run_readiness ready_short_sha 1 invalid_input unknown pending aaaaaaa
+run_readiness ready_no_repo 1 invalid_input unknown pending "$expected_head" ''
+run_readiness ready_invalid_timeout 1 invalid_input unknown pending "$expected_head" example/widgets '' invalid
+run_readiness ready_stale 3 head_changed unknown pending "${expected_head//a/b}"
+run_readiness ready_head_at_request 3 head_changed success pending
+run_readiness ready_head_at_rest 3 head_changed success pending
+run_readiness ready_head_at_fallback 3 head_changed success pending
+run_readiness ready_head_at_end 3 head_changed success activity
+run_readiness ready_head_on_second_page 3 head_changed success activity
+run_readiness ready_replaced_at_start 3 head_changed unknown pending
+run_readiness ready_replaced_in_wait 3 head_changed pending activity
+run_readiness ready_timeline_error 124 timeout success pending
+run_readiness ci_failure 2 checks_failed failure pending
+run_readiness ready_checks_partial 4 query_error query_error pending
+run_readiness ready_checks_incomplete 4 query_error query_error pending
+run_readiness ready_checks_regressed 5 checks_pending pending activity
+run_readiness ready_checks_failed_at_end 2 checks_failed failure activity
+run_readiness ready_closed 5 pr_not_open unknown pending
+run_readiness ready_merged 5 pr_not_open unknown pending
+run_readiness ready_closed_in_wait 5 pr_not_open success pending
+run_readiness ready_closed_at_request 5 pr_not_open success pending
+run_readiness ready_closed_at_fallback 5 pr_not_open success pending
+run_readiness ready_closed_final 5 pr_not_open success activity
+run_readiness ready_draft 5 draft success activity
+run_readiness ready_unclean 5 merge_blocked success activity
+run_readiness ready_conflicting 5 merge_blocked success activity
+run_readiness ready_unknown 4 query_error success activity
+run_readiness ready_unknown_state 4 query_error success activity
+run_readiness ready_unknown_with_blocker 5 merge_blocked success activity
+run_readiness ready_review_blocked 5 review_blocked success activity
+run_readiness ready_review_required 5 review_blocked success activity
+run_readiness ready_threads 5 unresolved_threads success activity
+for scenario in ready_missing_page ready_threads_incomplete ready_missing_state ready_graphql_errors ready_graphql_failed; do
+    run_readiness "$scenario" 4 query_error success activity
+done
 
 printf '%s\n' 'PASS: poll-pr-review regression tests'
