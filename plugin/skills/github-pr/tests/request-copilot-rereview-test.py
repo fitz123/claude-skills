@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix='copilot-rereview-') as tmp:
             state = root / f'{locale_name}-{mode}'
             state.mkdir()
             env = dict(os.environ)
-            for key in ('GH_REPO', 'GH_HOST', 'COPILOT_REREVIEW_COOLDOWN_SECONDS'):
+            for key in ('GH_REPO', 'GH_HOST', 'GH_PR_EXPECTED_HEAD', 'COPILOT_REREVIEW_COOLDOWN_SECONDS'):
                 env.pop(key, None)
             env.update(PATH=str(bin_dir) + os.pathsep + env['PATH'],
                        FAKE_STATE=str(state), FAKE_CWD_REPO='example/widgets',

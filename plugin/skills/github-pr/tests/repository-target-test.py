@@ -155,7 +155,8 @@ for helper, script, mode in helpers:
         state = results / f'{helper}-{label}'
         state.mkdir()
         env = dict(os.environ)
-        for key in ('GH_REPO', 'GH_HOST', 'GH_PR_NOTIFY_TARGET', 'GH_PR_REQUEST_SCRIPT', 'GH_PR_ALLOW_NO_CHECKS'):
+        for key in ('GH_REPO', 'GH_HOST', 'GH_PR_NOTIFY_TARGET', 'GH_PR_REQUEST_SCRIPT',
+                    'GH_PR_ALLOW_NO_CHECKS', 'GH_PR_EXPECTED_HEAD'):
             env.pop(key, None)
         env.update(PATH=str(bin_dir) + os.pathsep + env['PATH'], FAKE_STATE=str(state),
                    FAKE_CWD_REPO=cwd_repo, FAKE_MODE=mode, LC_ALL='C')
