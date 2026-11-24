@@ -216,7 +216,9 @@ current_head_fallback_state() {
                 (is_copilot_actor | not) and
                 (((.body // "") | test("@copilot"; "i")));
              def is_copilot_reply:
-                .event == "commented" and event_login == $reply_author;
+                .event == "commented" and
+                (event_login == $reply_author or
+                 (.user | ((.login // "") | ascii_downcase) == "copilot" and .type == "Bot"));
              def push_reply_evidence:
                 ([to_entries[] | select(.value | is_copilot_reply)] | last) as $reply |
                 if $reply == null then ["none", "none"]

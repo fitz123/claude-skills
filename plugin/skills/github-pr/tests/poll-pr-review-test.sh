@@ -269,12 +269,18 @@ fake_gh() {
                     local timeline_call
                     timeline_call=$(next_call timeline)
                     case "$TEST_SCENARIO" in
-                        ready_previous_comment|ready_marker_comment|ready_push_comment|ready_comment_before_push|ready_comment_wrong_push|ready_comment_old_trigger)
+                        ready_previous_comment|ready_marker_comment|ready_copilot_bot_comment|ready_copilot_user_comment|ready_copilot_old_comment|ready_push_comment|ready_comment_before_push|ready_comment_wrong_push|ready_comment_old_trigger)
                             local reply='{"event":"commented","id":101,"created_at":"2026-07-14T10:02:00Z","user":{"login":"copilot-swe-agent"}}'
                             local marker="$current_marker"
                             case "$TEST_SCENARIO" in
                                 ready_previous_comment) marker="<!-- github-pr-rereview-head:${head_sha//a/b} -->" ;;
                                 ready_marker_comment) ;;
+                                ready_copilot_*_comment)
+                                    local reply_type=Bot
+                                    [ "$TEST_SCENARIO" != ready_copilot_user_comment ] || reply_type=User
+                                    [ "$TEST_SCENARIO" != ready_copilot_old_comment ] || marker="<!-- github-pr-rereview-head:${head_sha//a/b} -->"
+                                    reply="{\"event\":\"commented\",\"id\":101,\"created_at\":\"2026-07-14T10:02:00Z\",\"user\":{\"login\":\"Copilot\",\"type\":\"$reply_type\"},\"body\":\"> @copilot please re-review\\n> $marker\\n\\nReview complete.\"}"
+                                    ;;
                                 ready_comment_old_trigger)
                                     emit_json "[{\"event\":\"review_requested\",\"created_at\":\"2026-07-14T10:00:00Z\",\"requested_reviewer\":{\"login\":\"Copilot\"}},$reply]"
                                     return
@@ -755,6 +761,9 @@ run_readiness() {
 
 run_readiness ready_previous_comment 124 timeout success pending
 run_readiness ready_marker_comment 0 ready success activity
+run_readiness ready_copilot_bot_comment 0 ready success activity
+run_readiness ready_copilot_user_comment 124 timeout success pending
+run_readiness ready_copilot_old_comment 124 timeout success pending
 run_readiness ready_push_comment 0 ready success activity
 run_readiness ready_comment_before_push 124 timeout success pending
 run_readiness ready_comment_wrong_push 124 timeout success pending
